@@ -36,9 +36,19 @@ class VttSubtitleParser : SubtitleParser {
                 i++
                 continue
             }
-            val start = parseTimestamp(range.groupValues[1].trim()) ?: run { i++; pendingId = null; continue }
+            val start = parseTimestamp(range.groupValues[1].trim())
+            if (start == null) {
+                i++
+                pendingId = null
+                continue
+            }
             val endToken = range.groupValues[2].trim().split(" ").first()
-            val end = parseTimestamp(endToken) ?: run { i++; pendingId = null; continue }
+            val end = parseTimestamp(endToken)
+            if (end == null) {
+                i++
+                pendingId = null
+                continue
+            }
             i++
             val textLines = mutableListOf<String>()
             while (i < lines.size && lines[i].trim().isNotEmpty()) {
