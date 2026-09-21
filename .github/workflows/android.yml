@@ -18,11 +18,14 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # ubuntu-latest runners already ship the Android SDK; no setup action needed.
+      # ubuntu-latest runners already ship the Android SDK; just ensure API 36 is present.
       - name: Install Android platform packages
         run: |
+          SDK="$ANDROID_HOME"
+          if [ -z "$SDK" ]; then SDK="$ANDROID_SDK_ROOT"; fi
+          export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
-          yes | sdkmanager --licenses > /dev/null
+          (yes || true) | sdkmanager --licenses > /dev/null || true
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
