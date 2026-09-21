@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.librium.core.LibLog
 import com.librium.subtitle.AnalyzerOptions
 import com.librium.subtitle.DefaultSubtitleAnalyzer
 import com.librium.subtitle.DefaultSubtitleSynchronizer
@@ -81,10 +82,14 @@ class SubtitleEditorViewModel(
         viewModelScope.launch {
             val doc = repository.loadDocument(resolver, uri, displayName)
             if (doc == null) {
+                LibLog.w(LibLog.SUB) { "unsupported subtitle: $displayName" }
                 _state.update {
                     it.copy(isLoading = false, error = "Unsupported subtitle file.")
                 }
             } else {
+                LibLog.i(LibLog.SUB) {
+                    "loaded ${doc.format} with ${doc.events.size} cues"
+                }
                 _state.update {
                     it.copy(
                         isLoading = false,
@@ -116,6 +121,10 @@ class SubtitleEditorViewModel(
         viewModelScope.launch {
             val result = withContext(Dispatchers.Default) {
                 analyzer.analyze(doc, videoDurationMs)
+            }
+            LibLog.i(LibLog.SUB) {
+                "analysis: ${result.errors.size} errors, " +
+                    "${result.warnings.size} warnings over ${doc.events.size} cues"
             }
             _state.update {
                 it.copy(

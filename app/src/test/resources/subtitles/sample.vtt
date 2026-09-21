@@ -1,0 +1,14 @@
+WEBVTT - Fixture
+
+NOTE translator header comment
+
+STYLE
+::cue { color: #fff }
+
+intro
+00:01.000 --> 00:03.500 align:start position:0%
+First VTT cue
+
+00:05.000 --> 00:07.250
+Second cue
+with two lines

@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.librium.core.LibLog
 import com.librium.subtitle.SubtitleFormat
 import com.librium.subtitle.formatForFileName
 
@@ -29,10 +30,23 @@ object MediaResolver {
 
     val SUPPORTED_SUBTITLE_EXTENSIONS: Set<String> = setOf("srt", "ass", "ssa", "vtt")
 
+    /** Common container extensions, for remote URLs and file-manager paths. */
+    val SUPPORTED_VIDEO_EXTENSIONS: Set<String> = setOf(
+        "mp4", "m4v", "mkv", "webm", "avi", "mov",
+        "ts", "m2ts", "flv", "wmv", "mpg", "mpeg", "3gp", "ogv",
+    )
+
+    fun isSupportedVideo(nameOrUri: String): Boolean {
+        val ext = nameOrUri.substringAfterLast('.', "").substringBefore('?').lowercase()
+        return ext in SUPPORTED_VIDEO_EXTENSIONS
+    }
+
     fun displayName(resolver: ContentResolver, uri: Uri): String {
         var name: String? = null
         val cursor: Cursor? = runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        }.onFailure { e ->
+            LibLog.w(LibLog.MEDIA) { "displayName query failed: ${e.message}" }
         }.getOrNull()
         cursor?.use {
             if (it.moveToFirst()) {

@@ -4,6 +4,7 @@ import android.app.Application
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.librium.core.LibLog
 import com.librium.player.DefaultPlayerController
 import com.librium.player.MpvPlayerEngine
 import com.librium.player.PlayerController
@@ -26,6 +27,7 @@ class PlayerViewModel(
     val state: StateFlow<PlayerState> = controller.state
 
     init {
+        LibLog.i(LibLog.PLAYER) { "PlayerViewModel created" }
         engine.initialize()
     }
 
@@ -50,6 +52,7 @@ class PlayerViewModel(
     fun detachSurface() = engine.detachSurface()
 
     override fun onCleared() {
+        LibLog.i(LibLog.PLAYER) { "PlayerViewModel cleared" }
         engine.release()
         super.onCleared()
     }

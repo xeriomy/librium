@@ -2,6 +2,7 @@ package com.librium.player
 
 import android.content.Context
 import android.view.Surface
+import com.librium.core.LibLog
 import dev.jdtech.mpv.MPVLib
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,14 +40,24 @@ class MpvPlayerEngine(
     @Volatile
     private var observeRegistered = false
 
+    @Volatile
+    private var surfaceAttached = false
+
+    private val lifecycle = EngineLifecycle()
+
     private var pollJob: Job? = null
 
     override fun initialize() {
-        if (mpv != null) return
+        if (!lifecycle.tryBeginInit()) {
+            LibLog.d(LibLog.MPV) { "initialize refused (already started)" }
+            return
+        }
+        LibLog.i(LibLog.MPV) { "initializing libmpv" }
         scope.launch {
             try {
                 val instance = MPVLib.create(appContext)
                 if (instance == null) {
+                    lifecycle.markInitFailed()
                     _state.update {
                         it.copy(error = "Could not create libmpv instance")
                     }
@@ -54,13 +65,23 @@ class MpvPlayerEngine(
                 }
                 applyInitialOptions(instance)
                 instance.init()
+                if (lifecycle.isReleased()) {
+                    // Released while starting: destroy the orphan, publish nothing.
+                    runCatching { instance.destroy() }
+                    LibLog.w(LibLog.MPV) { "init finished after release; orphan destroyed" }
+                    return@launch
+                }
                 instance.addObserver(this@MpvPlayerEngine)
                 observeRegistered = true
                 observeProperties(instance)
                 mpv = instance
+                lifecycle.markReady()
                 _state.update { it.copy(isInitialized = true, error = null) }
+                LibLog.i(LibLog.MPV) { "libmpv ready" }
                 startPolling()
             } catch (t: Throwable) {
+                lifecycle.markInitFailed()
+                LibLog.e(LibLog.MPV, t) { "init failed" }
                 _state.update {
                     it.copy(error = "Player init failed: ${t.message}")
                 }
@@ -69,6 +90,11 @@ class MpvPlayerEngine(
     }
 
     override fun release() {
+        if (!lifecycle.tryBeginRelease()) {
+            LibLog.d(LibLog.MPV) { "release refused (already released)" }
+            return
+        }
+        LibLog.i(LibLog.MPV) { "releasing libmpv" }
         pollJob?.cancel()
         pollJob = null
         scope.launch {
@@ -84,12 +110,14 @@ class MpvPlayerEngine(
                 // Best effort during teardown.
             } finally {
                 mpv = null
+                surfaceAttached = false
                 scope.cancel()
             }
         }
     }
 
     override fun openVideo(uri: String) {
+        LibLog.i(LibLog.PLAYER) { "openVideo" }
         _state.update {
             it.copy(
                 isLoading = true,
@@ -196,13 +224,27 @@ class MpvPlayerEngine(
 
     override fun attachSurface(surface: Surface) {
         scope.launch {
-            runCatching { mpv?.attachSurface(surface) }
+            val m = mpv
+            if (m == null) {
+                LibLog.d(LibLog.MPV) { "attachSurface without instance; ignored" }
+                return@launch
+            }
+            runCatching {
+                if (surfaceAttached) m.detachSurface()
+                m.attachSurface(surface)
+                surfaceAttached = true
+            }.onFailure { e ->
+                LibLog.e(LibLog.MPV, e) { "attachSurface failed" }
+            }
         }
     }
 
     override fun detachSurface() {
         scope.launch {
+            if (!surfaceAttached) return@launch
+            surfaceAttached = false
             runCatching { mpv?.detachSurface() }
+                .onFailure { e -> LibLog.e(LibLog.MPV, e) { "detachSurface failed" } }
         }
     }
 
@@ -291,6 +333,7 @@ class MpvPlayerEngine(
             }
             runCatching { m.command(cmd) }
                 .onFailure { e ->
+                    LibLog.e(LibLog.MPV, e) { "command ${cmd.firstOrNull()} failed" }
                     _state.update { it.copy(isLoading = false, error = e.message) }
                 }
         }
@@ -302,6 +345,11 @@ class MpvPlayerEngine(
             while (isActive) {
                 delay(POLL_MS)
                 val m = mpv ?: continue
+                // No JNI traffic while idle or paused: the observed
+                // properties already cover those states, and StateFlow
+                // dedupes identical values anyway.
+                val snap = _state.value
+                if (!snap.hasMedia || snap.isPaused) continue
                 runCatching {
                     m.getPropertyDouble("time-pos")?.let { pos ->
                         _state.update {
