@@ -1,6 +1,6 @@
 package com.librium.subtitle
 
-/** Loads `src/test/resources/subtitles/*` fixtures as UTF-8 text. */
+/** Loads the subtitle fixtures under src/test/resources as UTF-8 text. */
 object SubtitleFixtures {
     fun text(name: String): String {
         val stream = SubtitleFixtures::class.java.classLoader

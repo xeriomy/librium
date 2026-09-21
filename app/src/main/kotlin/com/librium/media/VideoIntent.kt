@@ -5,9 +5,9 @@ import android.net.Uri
 
 /**
  * External "Open with / Play with" entry point. Librium registers
- * `ACTION_VIEW` for `video/*` only (never a catch-all filter); this object
- * turns a received intent into a [VideoRequest] for the existing
- * `PlayerController.openVideo` path.
+ * ACTION_VIEW for the video MIME type only (never a catch-all filter);
+ * this object turns a received intent into a [VideoRequest] for the
+ * existing `PlayerController.openVideo` path.
  *
  * The `parse` overload is pure and unit-tested; [resolve] is a thin
  * Android wrapper around it.
@@ -26,8 +26,8 @@ object VideoIntent {
 
     /**
      * Returns a request when [action] is `ACTION_VIEW` and [uriString]
-     * points at a playable video, else null. `content`/`file` URIs are
-     * accepted as-is (the intent filter already matched `video/*`);
+     * points at a playable video, else null. Content and file URIs are
+     * accepted as-is (the intent filter already matched video MIME types);
      * remote URLs additionally require a video MIME type or extension.
      */
     fun parse(action: String?, uriString: String?, mimeType: String?): VideoRequest? {
