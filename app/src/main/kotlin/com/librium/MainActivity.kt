@@ -11,6 +11,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -24,6 +25,8 @@ import com.librium.ui.player.PlayerScreen
 import com.librium.ui.player.PlayerViewModel
 import com.librium.ui.theme.ComposeEmptyActivityTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -57,13 +60,20 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ComposeEmptyActivityTheme {
-                val playerState by playerVm.state.collectAsStateWithLifecycle()
+                // Gate slice only: the root must not recompose on 4 Hz
+                // position ticks, only on media/loading/error changes.
+                val gateFlow = remember(playerVm) {
+                    playerVm.state
+                        .map { Triple(it.hasMedia, it.isLoading, it.error) }
+                        .distinctUntilChanged()
+                }
+                val gate by gateFlow.collectAsStateWithLifecycle(Triple(false, false, null))
                 // The player is only ever visible with real media state;
                 // anything else falls back to home, never an empty player.
                 val inPlayer = showPlayer && shouldShowPlayer(
-                    hasMedia = playerState.hasMedia,
-                    isLoading = playerState.isLoading,
-                    error = playerState.error,
+                    hasMedia = gate.first,
+                    isLoading = gate.second,
+                    error = gate.third,
                 )
                 if (inPlayer) {
                     PlayerScreen(
@@ -123,6 +133,8 @@ class MainActivity : ComponentActivity() {
                                 uri,
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
                             )
+                        }.onFailure { e ->
+                            LibLog.w(LibLog.SAF) { "persist permission failed: ${e.message}" }
                         }
                     }
                 }

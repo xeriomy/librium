@@ -29,7 +29,8 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 
 - `MPVLib` is instance-based in 1.0.0: `MPVLib.create(ctx)` → `setOptionString(...)` → `init()`; all calls off the main thread (engine uses `Dispatchers.IO`).
 - Track ids are mpv ids, `-1` = off. Subtitle on/off uses `sub-visibility`; selection uses `sid`.
-- Content URIs from SAF are passed to mpv as strings (`loadfile`, `sub-add`).
+- `content://` URIs NEVER go to mpv raw: this ffmpeg build has no `content` protocol (verified in the AAR). `MpvPlayerEngine` resolves them first — real path via `/proc/self/fd` when file-backed, else `fd://` with the PFD held open. Never close a PFD backing the active file; PFDs commit (close others) on FILE_LOADED and drop on failure/release.
+- A load that ends before FILE_LOADED is a failure: `END_FILE` attribution (`LoadAttribution`) reports it instead of silently bouncing to Home. `pause` events only clear the loading spinner for live media.
 - AAR is ~45 MB; do not commit `.so` files; no `abiFilters` set (App Bundle handles splits).
 
 ## Commands
@@ -37,7 +38,7 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 - `./gradlew assembleDebug` — debug APK
 - `./gradlew testDebugUnitTest` — unit tests (subtitle parsers)
 - `./gradlew testDebugUnitTest --tests "com.librium.subtitle.SubtitleParserTest"` — single class
-- CI: `.github/workflows/android.yml` runs assemble + unit tests. Local builds need Android SDK (`ANDROID_HOME`); never commit `local.properties`.
+- CI: `.github/workflows/android.yml` runs assemble + unit tests + lint (single Gradle call for test+lint) with Gradle build caching. Local builds need Android SDK (`ANDROID_HOME`); never commit `local.properties`.
 
 ## Logging (debug builds only)
 

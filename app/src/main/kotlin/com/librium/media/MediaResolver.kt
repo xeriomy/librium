@@ -4,10 +4,13 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import com.librium.core.LibLog
 import com.librium.subtitle.SubtitleFormat
 import com.librium.subtitle.formatForFileName
+import java.io.File
+import java.io.FileInputStream
 
 /**
  * Storage Access Framework helpers. No broad filesystem access:
@@ -78,8 +81,7 @@ object MediaResolver {
         return VideoPick(uri.toString(), displayName(resolver, uri))
     }
 
-    fun displayName(resolver: ContentResolver, uri: Uri): String {
-        var name: String? = null
+    fun displayName(resolver: ContentResolver, uri: Uri): String {        var name: String? = null
         val cursor: Cursor? = runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         }.onFailure { e ->
@@ -95,6 +97,42 @@ object MediaResolver {
             name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
         }
         return name ?: "media"
+    }
+
+    /**
+     * Opens a read descriptor for a `content://` URI, or null (e.g. a lost
+     * URI grant). Blocking binder call — callers must invoke off the main
+     * thread. The caller owns the returned descriptor and must close it.
+     */
+    fun openContentFd(resolver: ContentResolver, uri: Uri): ParcelFileDescriptor? =
+        runCatching { resolver.openFileDescriptor(uri, "r") }
+            .onFailure { e ->
+                LibLog.w(LibLog.MEDIA) { "open content fd failed: ${e.message}" }
+            }
+            .getOrNull()
+
+    /**
+     * Best-effort real filesystem path for an open descriptor, mirroring
+     * the proven mpv-android approach: file-backed providers resolve via
+     * /proc/self/fd and then play as plain files (fast, fully seekable).
+     * Returns null for non-file-backed providers. Cheap local IO only.
+     */
+    fun realPathOf(fd: Int): String? {
+        var probe: FileInputStream? = null
+        return try {
+            val path = File("/proc/self/fd/$fd").canonicalPath
+            if (path.startsWith("/proc")) return null
+            if (!File(path).canRead()) return null
+            // Prove readability before handing the path to native code.
+            probe = FileInputStream(path)
+            if (probe.read() < 0) return null
+            LibLog.d(LibLog.MEDIA) { "content fd resolved to file" }
+            path
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { probe?.close() }
+        }
     }
 
     fun isSupportedSubtitle(nameOrUri: String): Boolean {

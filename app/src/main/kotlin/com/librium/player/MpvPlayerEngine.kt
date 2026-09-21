@@ -1,8 +1,11 @@
 package com.librium.player
 
 import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.view.Surface
 import com.librium.core.LibLog
+import com.librium.media.MediaResolver
 import dev.jdtech.mpv.MPVLib
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +46,30 @@ class MpvPlayerEngine(
     private val lifecycle = EngineLifecycle()
     private val seekTracker = SeekTracker()
     private val positionThrottle = PositionThrottle()
+
+    /**
+     * True while a loadfile has no FILE_LOADED yet. Lets END_FILE tell a
+     * failed open (report it) apart from a natural end or a superseded
+     * file during replace (stay quiet).
+     */
+    @Volatile
+    private var loadPending = false
+
+    /** The exact mpv URI string sent for the pending load, for attribution. */
+    @Volatile
+    private var pendingUri: String? = null
+
+    /**
+     * Descriptors backing `fd://` playback. The previous file's descriptor
+     * must stay open until mpv confirms the new file (or the load dies),
+     * so closes happen only on FILE_LOADED, failure, or release — never on
+     * open. Guarded by its own monitor; touched from IO coroutines and the
+     * mpv event thread, never the main thread.
+     */
+    private val mediaPfds = ArrayDeque<ParcelFileDescriptor>()
+
+    /** Descriptors backing `fd://` external subtitles; cleared per video. */
+    private val subtitlePfds = ArrayDeque<ParcelFileDescriptor>()
 
     /**
      * Surface attach/detach runs on a dedicated serial worker so the
@@ -125,6 +152,10 @@ class MpvPlayerEngine(
         pollJob = null
         surfaceScope.cancel()
         surfaces.reset()
+        loadPending = false
+        pendingUri = null
+        dropAllMediaPfds()
+        dropAllSubtitlePfds()
         scope.launch {
             try {
                 mpv?.let {
@@ -146,16 +177,39 @@ class MpvPlayerEngine(
     override fun openVideo(uri: String) {
         LibLog.i(LibLog.PLAYER) { "openVideo" }
         positionThrottle.reset()
-        _state.update {
-            it.copy(
-                isLoading = true,
-                hasMedia = false,
-                positionMs = 0L,
-                durationMs = 0L,
-                error = null,
-            )
+        loadPending = true
+        // Spinner first; media fields reset only once the target actually
+        // resolves, so a failed resolve leaves a playing video untouched.
+        _state.update { it.copy(isLoading = true, error = null) }
+        // Resolution does provider IO, so it runs after the synchronous
+        // state update above (the spinner shows immediately).
+        scope.launch {
+            if (mpv == null) {
+                loadPending = false
+                pendingUri = null
+                _state.update {
+                    it.copy(isLoading = false, error = "Player not initialized yet")
+                }
+                return@launch
+            }
+            val target = resolveMpvTarget(uri)
+            if (target == null) {
+                loadPending = false
+                pendingUri = null
+                LibLog.w(LibLog.MPV) { "unresolvable media uri" }
+                _state.update { it.copy(isLoading = false, error = VIDEO_OPEN_FAILED_MESSAGE) }
+                return@launch
+            }
+            // A new video drops previous external subtitles, descriptors
+            // included; mpv forgets them on loadfile anyway.
+            dropAllSubtitlePfds()
+            _state.update {
+                it.copy(hasMedia = false, positionMs = 0L, durationMs = 0L)
+            }
+            pendingUri = target.mpvUri
+            adoptMediaPfd(target.pfd)
+            mpvCommand(arrayOf("loadfile", target.mpvUri, "replace"))
         }
-        mpvCommand(arrayOf("loadfile", uri, "replace"))
     }
 
     override fun play() = setPaused(false)
@@ -262,7 +316,26 @@ class MpvPlayerEngine(
     }
 
     override fun addExternalSubtitle(uri: String) {
-        mpvCommand(arrayOf("sub-add", uri, "select"))
+        scope.launch {
+            if (mpv == null) return@launch
+            val target = resolveMpvTarget(uri)
+            if (target == null) {
+                LibLog.w(LibLog.MPV) { "unresolvable subtitle uri" }
+                _state.update { it.copy(error = SUBTITLE_LOAD_FAILED_FALLBACK) }
+                return@launch
+            }
+            // mpv parses the file when it executes sub-add, so a descriptor
+            // must outlive this coroutine: hold it until the next video.
+            if (target.pfd != null) {
+                synchronized(subtitlePfds) {
+                    subtitlePfds.addLast(target.pfd)
+                    while (subtitlePfds.size > MAX_HELD_SUB_PFDS) {
+                        runCatching { subtitlePfds.removeFirst().close() }
+                    }
+                }
+            }
+            mpvCommand(arrayOf("sub-add", target.mpvUri, "select"))
+        }
     }
 
     override fun setSubtitleDelay(delayMs: Long) {
@@ -342,7 +415,11 @@ class MpvPlayerEngine(
 
     override fun eventProperty(property: String, value: Boolean) {
         when (property) {
-            "pause" -> _state.update { it.copy(isPaused = value, isLoading = false) }
+            // Only live media clears the spinner: a pause event arriving
+            // before FILE_LOADED must not drop the visibility gate.
+            "pause" -> _state.update {
+                it.copy(isPaused = value, isLoading = if (it.hasMedia) false else it.isLoading)
+            }
             "mute" -> _state.update { it.copy(isMuted = value) }
             "sub-visibility" -> _state.update { it.copy(subtitlesEnabled = value) }
             "paused-for-cache" -> _state.update {
@@ -364,12 +441,41 @@ class MpvPlayerEngine(
 
     override fun event(eventId: Int) {
         when (eventId) {
+            MPVLib.MpvEvent.MPV_EVENT_START_FILE -> {
+                LibLog.d(LibLog.MPV) { "start-file received" }
+                _state.update { it.copy(isLoading = true) }
+            }
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> {
+                loadPending = false
+                pendingUri = null
+                commitMediaPfd()
+                LibLog.d(LibLog.MPV) { "file loaded" }
                 _state.update { it.copy(hasMedia = true, isLoading = false, error = null) }
                 mpv?.let { refreshTracks(it) }
             }
             MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
-                _state.update { it.copy(isLoading = false) }
+                val action = endFileAction(
+                    loadPending = loadPending,
+                    currentPath = mpv?.getPropertyString("path"),
+                    pendingUri = pendingUri,
+                )
+                when (action) {
+                    EndFileAction.IGNORE -> {
+                        LibLog.d(LibLog.MPV) { "end-file for superseded load; spinner stays" }
+                    }
+                    EndFileAction.CLEAR_LOADING -> {
+                        _state.update { it.copy(isLoading = false) }
+                    }
+                    EndFileAction.REPORT_FAILURE -> {
+                        loadPending = false
+                        pendingUri = null
+                        dropAllMediaPfds()
+                        LibLog.w(LibLog.MPV) { "load failed before first frame" }
+                        _state.update {
+                            it.copy(isLoading = false, error = VIDEO_OPEN_FAILED_MESSAGE)
+                        }
+                    }
+                }
             }
             MPVLib.MpvEvent.MPV_EVENT_SEEK -> {
                 LibLog.d(LibLog.MPV) { "seek event received" }
@@ -381,6 +487,80 @@ class MpvPlayerEngine(
     }
 
     // --- internals ---
+
+    /** Resolved mpv-openable target plus an optionally held descriptor. */
+    private data class ResolvedMedia(
+        val mpvUri: String,
+        val pfd: ParcelFileDescriptor?,
+    )
+
+    /**
+     * Translates an app URI into something this mpv build can actually
+     * open. Verified against the bundled native libraries: ffmpeg here
+     * has no `content` protocol, while mpv core supports `fd://`.
+     * Non-content URIs (file, http(s), ...) pass through untouched.
+     * Runs on IO; never throws (null = unresolvable).
+     */
+    private fun resolveMpvTarget(uriString: String): ResolvedMedia? {
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull()
+            ?: return null
+        if (uri.scheme != "content") return ResolvedMedia(uriString, null)
+        val pfd = MediaResolver.openContentFd(appContext.contentResolver, uri)
+            ?: return null
+        val real = MediaResolver.realPathOf(pfd.fd)
+        if (real != null) {
+            // File-backed provider: play the real file directly (fast,
+            // fully seekable) and drop the descriptor immediately.
+            runCatching { pfd.close() }
+            LibLog.i(LibLog.MPV) { "content uri resolved to file path" }
+            return ResolvedMedia(real, null)
+        }
+        LibLog.i(LibLog.MPV) { "no real path; playing via fd" }
+        return ResolvedMedia("fd://${pfd.fd}", pfd)
+    }
+
+    /**
+     * Holds a media descriptor, evicting the oldest beyond the cap. Never
+     * closes on open: the previous file's descriptor may still back mpv
+     * until the new FILE_LOADED commits the switch.
+     */
+    private fun adoptMediaPfd(pfd: ParcelFileDescriptor?) {
+        if (pfd == null) return
+        synchronized(mediaPfds) {
+            mediaPfds.addLast(pfd)
+            while (mediaPfds.size > MAX_HELD_MEDIA_PFDS) {
+                runCatching { mediaPfds.removeFirst().close() }
+            }
+        }
+    }
+
+    /**
+     * New file confirmed playing: only the newest held descriptor can
+     * still back mpv; everything older belongs to superseded loads.
+     * Keyed by recency, never by URI string, so mpv path normalization
+     * can never trick us into closing the active descriptor.
+     */
+    private fun commitMediaPfd() {
+        synchronized(mediaPfds) {
+            while (mediaPfds.size > 1) {
+                runCatching { mediaPfds.removeFirst().close() }
+            }
+        }
+    }
+
+    private fun dropAllMediaPfds() {
+        synchronized(mediaPfds) {
+            mediaPfds.forEach { runCatching { it.close() } }
+            mediaPfds.clear()
+        }
+    }
+
+    private fun dropAllSubtitlePfds() {
+        synchronized(subtitlePfds) {
+            subtitlePfds.forEach { runCatching { it.close() } }
+            subtitlePfds.clear()
+        }
+    }
 
     /**
      * Reads the live libass appearance once the instance is up, so state
@@ -519,6 +699,14 @@ class MpvPlayerEngine(
 
     companion object {
         private const val POLL_MS = 500L
+
+        /** Bounds descriptors held across rapid replace churn. */
+        private const val MAX_HELD_MEDIA_PFDS = 8
+        private const val MAX_HELD_SUB_PFDS = 8
+
+        /** Shown when a video cannot be opened at all (stays on player). */
+        private const val VIDEO_OPEN_FAILED_MESSAGE =
+            "Could not open this video. The file may be unsupported or unreadable."
 
         /**
          * Matches the subtitle error wording without coupling player to the

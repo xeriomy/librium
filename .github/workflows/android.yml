@@ -18,14 +18,21 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # ubuntu-latest runners already ship the Android SDK; just ensure API 36 is present.
+      # Gradle build cache + configuration cache; the big warm-run win.
+      - name: Set up Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+
+      # ubuntu-latest runners already ship the Android SDK; install API 36
+      # only when missing (sdkmanager spin-up is slow).
       - name: Install Android platform packages
         run: |
           SDK="$ANDROID_HOME"
           if [ -z "$SDK" ]; then SDK="$ANDROID_SDK_ROOT"; fi
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
-          (yes || true) | sdkmanager --licenses > /dev/null || true
+          if [ ! -d "$SDK/platforms/android-36" ]; then
+            sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+            (yes || true) | sdkmanager --licenses > /dev/null || true
+          fi
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -33,11 +40,11 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --stacktrace
-
-      - name: Run lint
-        run: ./gradlew lintDebug --stacktrace
+      # One Gradle invocation for both: saves a full configuration +
+      # daemon warmup versus separate steps, with identical semantics
+      # (a test failure still skips lint, same as before).
+      - name: Run unit tests and lint
+        run: ./gradlew testDebugUnitTest lintDebug --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
