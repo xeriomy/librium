@@ -18,8 +18,11 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest runners already ship the Android SDK; no setup action needed.
+      - name: Install Android platform packages
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          yes | sdkmanager --licenses > /dev/null
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
