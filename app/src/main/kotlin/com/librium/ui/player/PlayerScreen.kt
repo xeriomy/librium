@@ -51,6 +51,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +72,10 @@ import com.librium.subtitle.SubtitleRejectReason
 import com.librium.subtitle.UNSUPPORTED_SUBTITLE_MESSAGE
 import com.librium.ui.subtitle.SubtitleEditorViewModel
 import com.librium.ui.subtitle.SubtitleInfoSheet
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Player screen: video surface + overlay controls, dark UI.
@@ -94,17 +98,34 @@ fun PlayerScreen(
     var scrubMs by remember { mutableStateOf<Long?>(null) }
     var subtitleBanner by remember { mutableStateOf<String?>(null) }
 
+    // Picker callbacks run on the main thread, so every potentially
+    // blocking provider call (query, permission) hops to IO first; only
+    // state updates and ViewModel calls run back on the main scope.
+    val ioWork = rememberCoroutineScope()
+
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
+        if (uri == null) {
+            LibLog.d(LibLog.SAF) { "video picker cancelled" }
+            return@rememberLauncherForActivityResult
+        }
+        ioWork.launch {
+            LibLog.timed(LibLog.SAF, "video pick resolve") {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
+                }
             }
-            val name = MediaResolver.displayName(context.contentResolver, uri)
+            val name = LibLog.timed(LibLog.SAF, "video displayName") {
+                withContext(Dispatchers.IO) {
+                    MediaResolver.displayName(context.contentResolver, uri)
+                }
+            }
             viewModel.openVideo(uri.toString(), name)
             controlsVisible = true
         }
@@ -112,35 +133,47 @@ fun PlayerScreen(
     val subtitlePicker = rememberLauncherForActivityResult(
         OpenSubtitleDocument(),
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val name = MediaResolver.displayName(context.contentResolver, uri)
-        when (val decision = SubtitleFileValidation.validate(name, uri.toString())) {
-            is SubtitleFileDecision.Accept -> {
-                // Persist access only for files we actually accept.
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
+        if (uri == null) {
+            LibLog.d(LibLog.SAF) { "subtitle picker cancelled" }
+            return@rememberLauncherForActivityResult
+        }
+        ioWork.launch {
+            val name = LibLog.timed(LibLog.SAF, "subtitle displayName") {
+                withContext(Dispatchers.IO) {
+                    MediaResolver.displayName(context.contentResolver, uri)
                 }
-                subtitleBanner = null
-                viewModel.addExternalSubtitle(uri.toString())
-                subtitleVm.loadExternal(context.contentResolver, uri, name)
-                subtitleToolsOpen = true
             }
-            is SubtitleFileDecision.Reject -> {
-                // Invalid files never reach the parser, mpv, or any state:
-                // keep everything untouched and explain what happened.
-                LibLog.d(LibLog.SUB) {
-                    "subtitle rejected (${decision.reason}): ${decision.detail}"
+            when (val decision = SubtitleFileValidation.validate(name, uri.toString())) {
+                is SubtitleFileDecision.Accept -> {
+                    // Persist access only for files we actually accept.
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            context.contentResolver.takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                            )
+                        }
+                    }
+                    subtitleBanner = null
+                    viewModel.addExternalSubtitle(uri.toString())
+                    subtitleVm.loadExternal(context.contentResolver, uri, name)
+                    subtitleToolsOpen = true
+                    controlsVisible = true
                 }
-                subtitleBanner = when (decision.reason) {
-                    SubtitleRejectReason.MISSING_NAME -> SUBTITLE_LOAD_FAILED_MESSAGE
-                    SubtitleRejectReason.UNSUPPORTED_EXTENSION -> UNSUPPORTED_SUBTITLE_MESSAGE
+                is SubtitleFileDecision.Reject -> {
+                    // Invalid files never reach the parser, mpv, or any state:
+                    // keep everything untouched and explain what happened.
+                    LibLog.d(LibLog.SUB) {
+                        "subtitle rejected (${decision.reason}): ${decision.detail}"
+                    }
+                    subtitleBanner = when (decision.reason) {
+                        SubtitleRejectReason.MISSING_NAME -> SUBTITLE_LOAD_FAILED_MESSAGE
+                        SubtitleRejectReason.UNSUPPORTED_EXTENSION -> UNSUPPORTED_SUBTITLE_MESSAGE
+                    }
+                    controlsVisible = true
                 }
             }
         }
-        controlsVisible = true
     }
 
     // Fullscreen drives orientation explicitly (landscape in, portrait out)

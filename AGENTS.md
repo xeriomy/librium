@@ -31,6 +31,13 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 - `./gradlew testDebugUnitTest --tests "com.librium.subtitle.SubtitleParserTest"` — single class
 - CI: `.github/workflows/android.yml` runs assemble + unit tests. Local builds need Android SDK (`ANDROID_HOME`); never commit `local.properties`.
 
+## Logging (debug builds only)
+
+Tags: `Librium:Player`, `Librium:Mpv`, `Librium:Sub`, `Librium:Media`, `Librium:Sync`, `Librium:Ui`, `Librium:Saf`, `Librium:Surface`, `Librium:Lifecycle`. Release builds are silent (`BuildConfig.DEBUG` gate). Seek latency: `seek requested` -> `seek command sent` -> `seek event received` -> `seek completed ... in Xms`. Async boundaries log `[START] op` / `[END] op durationMs=...`; a missing END pinpoints the blocking call. StrictMode (log-only) is enabled in debug `MainActivity.onCreate`.
+
+- `adb logcat | grep Librium` — everything
+- `adb logcat -s "Librium:Mpv" "Librium:Saf"` — seek + picker timing
+
 ## Manual device checklist (requires a real device; CI cannot cover these)
 
 Playback:

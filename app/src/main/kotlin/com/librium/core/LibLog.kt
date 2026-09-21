@@ -18,6 +18,10 @@ object LibLog {
     const val SUB = "Librium:Sub"
     const val MEDIA = "Librium:Media"
     const val SYNC = "Librium:Sync"
+    const val UI = "Librium:Ui"
+    const val SAF = "Librium:Saf"
+    const val SURFACE = "Librium:Surface"
+    const val LIFECYCLE = "Librium:Lifecycle"
 
     fun d(tag: String, message: () -> String) {
         if (BuildConfig.DEBUG) runCatching { Log.d(tag, message()) }
@@ -34,4 +38,24 @@ object LibLog {
     fun e(tag: String, throwable: Throwable? = null, message: () -> String) {
         if (BuildConfig.DEBUG) runCatching { Log.e(tag, message(), throwable) }
     }
+
+    /**
+     * DEBUG timing probe: logs `[START] op` / `[END] op durationMs=...`.
+     * A missing END line for an op pinpoints a blocking call on-device.
+     * Safe to call from unit tests (clock read is guarded).
+     */
+    suspend fun <T> timed(tag: String, op: String, block: suspend () -> T): T {
+        if (!BuildConfig.DEBUG) return block()
+        val start = nowMs()
+        d(tag) { "[START] $op" }
+        try {
+            return block()
+        } finally {
+            val took = nowMs() - start
+            d(tag) { "[END] $op durationMs=$took" }
+        }
+    }
+
+    private fun nowMs(): Long =
+        runCatching { android.os.SystemClock.uptimeMillis() }.getOrDefault(0L)
 }

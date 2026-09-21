@@ -99,7 +99,9 @@ class SubtitleEditorViewModel(
             it.copy(isLoading = true, error = null, notice = null, analysis = null)
         }
         viewModelScope.launch {
-            val doc = repository.loadDocument(resolver, uri, displayName)
+            val doc = LibLog.timed(LibLog.SUB, "subtitle load+parse") {
+                repository.loadDocument(resolver, uri, displayName)
+            }
             if (doc == null) {
                 LibLog.w(LibLog.SUB) { "could not load subtitle: $displayName" }
                 _state.update {
@@ -138,8 +140,10 @@ class SubtitleEditorViewModel(
         val doc = _state.value.document ?: return
         _state.update { it.copy(isAnalyzing = true, error = null) }
         viewModelScope.launch {
-            val result = withContext(Dispatchers.Default) {
-                analyzer.analyze(doc, videoDurationMs)
+            val result = LibLog.timed(LibLog.SUB, "analysis of ${doc.events.size} cues") {
+                withContext(Dispatchers.Default) {
+                    analyzer.analyze(doc, videoDurationMs)
+                }
             }
             LibLog.i(LibLog.SUB) {
                 "analysis: ${result.errors.size} errors, " +
@@ -173,18 +177,25 @@ class SubtitleEditorViewModel(
         }
     }
 
-    private inline fun updateDocument(
+    private fun updateDocument(
         notice: String?,
         transform: (SubtitleDocument) -> SubtitleDocument,
     ) {
         val doc = _state.value.document ?: return
-        _state.update {
-            it.copy(
-                document = transform(doc),
-                analysis = null,
-                previewLines = emptyList(),
-                notice = notice,
-            )
+        // Document copies can be large; compute off the main thread, then
+        // publish. The snapshot is immutable, so reading it here is safe.
+        viewModelScope.launch {
+            val next = LibLog.timed(LibLog.SUB, "document transform") {
+                withContext(Dispatchers.Default) { transform(doc) }
+            }
+            _state.update {
+                it.copy(
+                    document = next,
+                    analysis = null,
+                    previewLines = emptyList(),
+                    notice = notice,
+                )
+            }
         }
     }
 
@@ -257,7 +268,9 @@ class SubtitleEditorViewModel(
         _state.update { it.copy(isExporting = true, error = null, notice = null) }
         viewModelScope.launch {
             runCatching {
-                repository.saveDocument(resolver, uri, doc, format)
+                LibLog.timed(LibLog.SUB, "subtitle export") {
+                    repository.saveDocument(resolver, uri, doc, format)
+                }
             }.onSuccess {
                 _state.update { it.copy(isExporting = false, notice = "Exported as $format.") }
             }.onFailure { e ->

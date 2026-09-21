@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.librium.core.LibLog
 
 /**
  * libmpv renders into a [SurfaceView]. Surface lifecycle drives
@@ -26,6 +27,7 @@ fun MpvVideoSurface(
                 holder.addCallback(
                     object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
+                            LibLog.d(LibLog.SURFACE) { "surfaceCreated" }
                             currentCreated.value(holder.surface)
                         }
 
@@ -34,9 +36,14 @@ fun MpvVideoSurface(
                             format: Int,
                             width: Int,
                             height: Int,
-                        ) = Unit
+                        ) {
+                            // Size changes (e.g. rotation) are handled inside
+                            // mpv; logged for on-device rotation diagnosis.
+                            LibLog.d(LibLog.SURFACE) { "surfaceChanged ${width}x$height" }
+                        }
 
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            LibLog.d(LibLog.SURFACE) { "surfaceDestroyed" }
                             currentDestroyed.value()
                         }
                     },

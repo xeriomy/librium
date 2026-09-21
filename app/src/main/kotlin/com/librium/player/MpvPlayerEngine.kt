@@ -42,6 +42,7 @@ class MpvPlayerEngine(
 
     private val lifecycle = EngineLifecycle()
     private val seekTracker = SeekTracker()
+    private val positionThrottle = PositionThrottle()
 
     /**
      * Surface attach/detach runs on a dedicated serial worker so the
@@ -138,6 +139,7 @@ class MpvPlayerEngine(
 
     override fun openVideo(uri: String) {
         LibLog.i(LibLog.PLAYER) { "openVideo" }
+        positionThrottle.reset()
         _state.update {
             it.copy(
                 isLoading = true,
@@ -162,6 +164,7 @@ class MpvPlayerEngine(
         val target = positionMs.coerceAtLeast(0L)
         LibLog.i(LibLog.PLAYER) { "seek requested to ${target}ms (exact)" }
         seekTracker.onSeekRequested(target, "absolute-exact")
+        positionThrottle.reset()
         scope.launch {
             val m = mpv ?: return@launch
             runCatching {
@@ -185,6 +188,7 @@ class MpvPlayerEngine(
             (_state.value.positionMs + deltaMs).coerceAtLeast(0L),
             "relative+keyframes",
         )
+        positionThrottle.reset()
         scope.launch {
             val m = mpv ?: return@launch
             LibLog.d(LibLog.MPV) { "seek command sent" }
@@ -287,16 +291,7 @@ class MpvPlayerEngine(
 
     override fun eventProperty(property: String, value: Double) {
         when (property) {
-            "time-pos" -> {
-                val ms = (value * 1000).toLong().coerceAtLeast(0L)
-                seekTracker.onPositionChanged(ms)?.let { landing ->
-                    LibLog.i(LibLog.MPV) {
-                        "seek completed (${landing.mode}): target=${landing.targetMs}ms " +
-                            "landed=${landing.landedMs}ms in ${landing.latencyMs}ms"
-                    }
-                }
-                _state.update { it.copy(positionMs = ms) }
-            }
+            "time-pos" -> notePosition((value * 1000).toLong().coerceAtLeast(0L))
             "duration" -> _state.update {
                 it.copy(durationMs = (value * 1000).toLong().coerceAtLeast(0L))
             }
@@ -351,6 +346,23 @@ class MpvPlayerEngine(
 
     // --- internals ---
 
+    /**
+     * Single funnel for observed positions: confirms pending seeks for
+     * latency logging, then throttles state emission so per-frame mpv
+     * events cannot recompose the UI at refresh rate.
+     */
+    private fun notePosition(positionMs: Long) {
+        seekTracker.onPositionChanged(positionMs)?.let { landing ->
+            LibLog.i(LibLog.MPV) {
+                "seek completed (${landing.mode}): target=${landing.targetMs}ms " +
+                    "landed=${landing.landedMs}ms in ${landing.latencyMs}ms"
+            }
+        }
+        if (positionThrottle.shouldEmit(positionMs)) {
+            _state.update { it.copy(positionMs = positionMs) }
+        }
+    }
+
     private fun setPaused(paused: Boolean) {
         scope.launch {
             val m = mpv ?: return@launch
@@ -393,9 +405,7 @@ class MpvPlayerEngine(
                 if (!snap.hasMedia || snap.isPaused) continue
                 runCatching {
                     m.getPropertyDouble("time-pos")?.let { pos ->
-                        _state.update {
-                            it.copy(positionMs = (pos * 1000).toLong().coerceAtLeast(0L))
-                        }
+                        notePosition((pos * 1000).toLong().coerceAtLeast(0L))
                     }
                     m.getPropertyDouble("duration")?.let { dur ->
                         _state.update {
