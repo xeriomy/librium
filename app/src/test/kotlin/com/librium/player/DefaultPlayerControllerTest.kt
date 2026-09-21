@@ -41,6 +41,9 @@ class DefaultPlayerControllerTest {
         override fun setSubtitlesEnabled(enabled: Boolean) { calls.add("subEnabled:$enabled") }
         override fun addExternalSubtitle(uri: String) { calls.add("subAdd:$uri") }
         override fun setSubtitleDelay(delayMs: Long) { calls.add("delay:$delayMs") }
+        override fun setSubtitleAppearance(appearance: SubtitleAppearance) {
+            calls.add("appearance:${appearance.fontSize}")
+        }
         override fun attachSurface(surface: android.view.Surface) { calls.add("attach") }
         override fun detachSurface() { calls.add("detach") }
     }
@@ -109,8 +112,9 @@ class DefaultPlayerControllerTest {
         controller.addExternalSubtitle("content://s/1.srt")
         controller.selectSubtitleTrack(2)
         controller.setSubtitleDelay(500)
+        controller.setSubtitleAppearance(DEFAULT_SUBTITLE_APPEARANCE.copy(fontSize = 70f))
         assertEquals(
-            listOf("subAdd:content://s/1.srt", "sub:2", "delay:500"),
+            listOf("subAdd:content://s/1.srt", "sub:2", "delay:500", "appearance:70.0"),
             engine.calls,
         )
     }

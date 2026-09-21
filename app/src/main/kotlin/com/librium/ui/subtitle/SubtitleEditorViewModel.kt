@@ -20,6 +20,7 @@ import com.librium.subtitle.SubtitleSynchronizer
 import com.librium.subtitle.TimeMapping
 import com.librium.subtitle.TimingTransform
 import com.librium.subtitle.UNSUPPORTED_SUBTITLE_MESSAGE
+import com.librium.subtitle.UndoHistory
 import com.librium.subtitle.addEvent
 import com.librium.subtitle.mapRange
 import com.librium.subtitle.TimeRange
@@ -29,12 +30,15 @@ import com.librium.subtitle.shiftAll
 import com.librium.subtitle.splitEvent
 import com.librium.subtitle.withEventText
 import com.librium.subtitle.withEventTiming
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -63,6 +67,10 @@ data class SubtitleEditorState(
     val driftEndVideoText: String = "",
     val previewLines: List<String> = emptyList(),
     val exportFormat: SubtitleFormat = SubtitleFormat.SRT,
+    /** Null means "use the suggested name". Set once the user edits it. */
+    val exportFileName: String? = null,
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false,
     val notice: String? = null,
     val error: String? = null,
 )
@@ -72,7 +80,14 @@ class SubtitleEditorViewModel(
     private val analyzer: SubtitleAnalyzer =
         DefaultSubtitleAnalyzer(AnalyzerOptions()),
     private val synchronizer: SubtitleSynchronizer = DefaultSubtitleSynchronizer(),
+    workScope: CoroutineScope? = null,
 ) : ViewModel() {
+
+    // Injectable for unit tests (which have no Main dispatcher);
+    // production defaults to viewModelScope with identical behavior.
+    private val scope: CoroutineScope = workScope ?: viewModelScope
+    private val history = UndoHistory<SubtitleDocument>()
+    private val editMutex = Mutex()
 
     private val _state = MutableStateFlow(SubtitleEditorState())
     val state: StateFlow<SubtitleEditorState> = _state.asStateFlow()
@@ -98,7 +113,7 @@ class SubtitleEditorViewModel(
         _state.update {
             it.copy(isLoading = true, error = null, notice = null, analysis = null)
         }
-        viewModelScope.launch {
+        scope.launch {
             val doc = LibLog.timed(LibLog.SUB, "subtitle load+parse") {
                 repository.loadDocument(resolver, uri, displayName)
             }
@@ -127,7 +142,34 @@ class SubtitleEditorViewModel(
     }
 
     fun clear() {
+        history.clear()
         _state.update { SubtitleEditorState() }
+    }
+
+    /**
+     * Loads an already-parsed document (used by tests and future entry
+     * points such as subtitle extras on video intents). Replaces history,
+     * like any fresh load.
+     */
+    fun loadDocument(document: SubtitleDocument, sourceName: String?) {
+        history.clear()
+        _state.update {
+            it.copy(
+                isLoading = false,
+                sourceUri = null,
+                sourceName = sourceName,
+                document = document,
+                analysis = null,
+                previewLines = emptyList(),
+                exportFormat = document.format.takeIf { f -> f != SubtitleFormat.UNKNOWN }
+                    ?: SubtitleFormat.SRT,
+                exportFileName = null,
+                canUndo = false,
+                canRedo = false,
+                notice = "Loaded ${document.events.size} cues.",
+                error = null,
+            )
+        }
     }
 
     fun clearNotice() {
@@ -139,7 +181,7 @@ class SubtitleEditorViewModel(
     fun runAnalysis(videoDurationMs: Long? = null) {
         val doc = _state.value.document ?: return
         _state.update { it.copy(isAnalyzing = true, error = null) }
-        viewModelScope.launch {
+        scope.launch {
             val result = LibLog.timed(LibLog.SUB, "analysis of ${doc.events.size} cues") {
                 withContext(Dispatchers.Default) {
                     analyzer.analyze(doc, videoDurationMs)
@@ -177,24 +219,75 @@ class SubtitleEditorViewModel(
         }
     }
 
+    fun applyScaleToDocument(factor: Double, pivotMs: Long) {
+        updateDocument("Rescaled by $factor around $pivotMs ms.") {
+            synchronizer.scale(it, factor, pivotMs)
+        }
+    }
+
+    /** Restores the previous document snapshot, if any. */
+    fun undo() {
+        scope.launch {
+            editMutex.withLock {
+                val current = _state.value.document ?: return@withLock
+                val previous = history.undo(current) ?: return@withLock
+                _state.update {
+                    it.copy(
+                        document = previous,
+                        analysis = null,
+                        previewLines = emptyList(),
+                        notice = null,
+                        canUndo = history.canUndo,
+                        canRedo = history.canRedo,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Re-applies an undone change, if any. */
+    fun redo() {
+        scope.launch {
+            editMutex.withLock {
+                val current = _state.value.document ?: return@withLock
+                val next = history.redo(current) ?: return@withLock
+                _state.update {
+                    it.copy(
+                        document = next,
+                        analysis = null,
+                        previewLines = emptyList(),
+                        notice = null,
+                        canUndo = history.canUndo,
+                        canRedo = history.canRedo,
+                    )
+                }
+            }
+        }
+    }
+
     private fun updateDocument(
         notice: String?,
         transform: (SubtitleDocument) -> SubtitleDocument,
     ) {
-        val doc = _state.value.document ?: return
-        // Document copies can be large; compute off the main thread, then
-        // publish. The snapshot is immutable, so reading it here is safe.
-        viewModelScope.launch {
-            val next = LibLog.timed(LibLog.SUB, "document transform") {
-                withContext(Dispatchers.Default) { transform(doc) }
-            }
-            _state.update {
-                it.copy(
-                    document = next,
-                    analysis = null,
-                    previewLines = emptyList(),
-                    notice = notice,
-                )
+        scope.launch {
+            // Serialized so rapid edits (and undo/redo) apply in order;
+            // each op pushes the pre-change snapshot for undo.
+            editMutex.withLock {
+                val doc = _state.value.document ?: return@withLock
+                val next = LibLog.timed(LibLog.SUB, "document transform") {
+                    withContext(Dispatchers.Default) { transform(doc) }
+                }
+                if (next !== doc) history.push(doc)
+                _state.update {
+                    it.copy(
+                        document = next,
+                        analysis = null,
+                        previewLines = emptyList(),
+                        notice = notice,
+                        canUndo = history.canUndo,
+                        canRedo = history.canRedo,
+                    )
+                }
             }
         }
     }
@@ -260,13 +353,17 @@ class SubtitleEditorViewModel(
         _state.update { it.copy(exportFormat = format) }
     }
 
+    fun setExportFileName(name: String?) {
+        _state.update { it.copy(exportFileName = name?.ifBlank { null }) }
+    }
+
     // --- export ---
 
     fun exportTo(resolver: ContentResolver, uri: Uri) {
         val doc = _state.value.document ?: return
         val format = _state.value.exportFormat
         _state.update { it.copy(isExporting = true, error = null, notice = null) }
-        viewModelScope.launch {
+        scope.launch {
             runCatching {
                 LibLog.timed(LibLog.SUB, "subtitle export") {
                     repository.saveDocument(resolver, uri, doc, format)
@@ -282,6 +379,7 @@ class SubtitleEditorViewModel(
     }
 
     fun suggestedExportName(): String {
+        _state.value.exportFileName?.let { return it }
         val base = _state.value.sourceName?.substringBeforeLast('.')?.ifBlank { null }
             ?: "subtitles"
         val ext = when (_state.value.exportFormat) {

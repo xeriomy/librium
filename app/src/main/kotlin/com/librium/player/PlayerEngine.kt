@@ -36,6 +36,9 @@ interface PlayerEngine {
     /** Live subtitle delay applied by the backend (mpv `sub-delay`). */
     fun setSubtitleDelay(delayMs: Long)
 
+    /** Tunes libass rendering; the backend publishes the result in state. */
+    fun setSubtitleAppearance(appearance: SubtitleAppearance)
+
     fun attachSurface(surface: Surface)
     fun detachSurface()
 }

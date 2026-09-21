@@ -34,6 +34,8 @@ data class PlayerState(
     val subtitlesEnabled: Boolean = true,
     /** Live mpv `sub-delay` in milliseconds (positive delays subtitles). */
     val subtitleDelayMs: Long = 0L,
+    /** Live libass appearance; the engine refreshes it from mpv on change. */
+    val subtitleAppearance: SubtitleAppearance = DEFAULT_SUBTITLE_APPEARANCE,
 ) {
     val isPlaying: Boolean get() = hasMedia && !isPaused && !isLoading
     val canSeek: Boolean get() = hasMedia && durationMs > 0L

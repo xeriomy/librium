@@ -96,7 +96,13 @@ class MpvPlayerEngine(
                 observeProperties(instance)
                 mpv = instance
                 lifecycle.markReady()
-                _state.update { it.copy(isInitialized = true, error = null) }
+                _state.update {
+                    it.copy(
+                        isInitialized = true,
+                        error = null,
+                        subtitleAppearance = readSubtitleAppearance(instance),
+                    )
+                }
                 LibLog.i(LibLog.MPV) { "libmpv ready" }
                 startPolling()
             } catch (t: Throwable) {
@@ -268,6 +274,36 @@ class MpvPlayerEngine(
         }
     }
 
+    override fun setSubtitleAppearance(appearance: SubtitleAppearance) {
+        scope.launch {
+            val m = mpv ?: return@launch
+            // Each property is applied independently: one unknown or
+            // rejected property must not skip the rest.
+            val ops: List<() -> Unit> = listOf(
+                { m.setPropertyDouble("sub-font-size", appearance.fontSize.toDouble()) },
+                { m.setPropertyString("sub-color", argbToMpvColor(appearance.textColor)) },
+                { m.setPropertyDouble("sub-border-size", appearance.outlineSize.toDouble()) },
+                { m.setPropertyString("sub-border-color", argbToMpvColor(appearance.outlineColor)) },
+                { m.setPropertyString("sub-back-color", argbToMpvColor(appearance.backgroundColor)) },
+                { m.setPropertyDouble("sub-shadow-offset", appearance.shadowOffset.toDouble()) },
+                { m.setPropertyString("sub-shadow-color", argbToMpvColor(appearance.shadowColor)) },
+                { m.setPropertyBoolean("sub-bold", appearance.bold) },
+                { m.setPropertyBoolean("sub-italic", appearance.italic) },
+                { m.setPropertyString("sub-align-x", appearance.alignX.name.lowercase()) },
+                { m.setPropertyString("sub-align-y", appearance.alignY.name.lowercase()) },
+                { m.setPropertyInt("sub-margin-x", appearance.marginX) },
+                { m.setPropertyInt("sub-margin-y", appearance.marginY) },
+                { m.setPropertyInt("sub-pos", appearance.position) },
+            )
+            ops.forEach { op ->
+                runCatching(op).onFailure { e ->
+                    LibLog.e(LibLog.MPV, e) { "subtitle appearance set failed" }
+                }
+            }
+            _state.update { it.copy(subtitleAppearance = appearance) }
+        }
+    }
+
     override fun attachSurface(surface: Surface) {
         surfaces.attach(surface)
     }
@@ -345,6 +381,33 @@ class MpvPlayerEngine(
     }
 
     // --- internals ---
+
+    /**
+     * Reads the live libass appearance once the instance is up, so state
+     * starts from real mpv values. Every read falls back to the factory
+     * default, so a missing property can never break initialization.
+     */
+    private fun readSubtitleAppearance(m: MPVLib): SubtitleAppearance {
+        val d = DEFAULT_SUBTITLE_APPEARANCE
+        return runCatching {
+            d.copy(
+                fontSize = m.getPropertyDouble("sub-font-size")?.toFloat() ?: d.fontSize,
+                textColor = mpvColorToArgb(m.getPropertyString("sub-color")) ?: d.textColor,
+                outlineSize = m.getPropertyDouble("sub-border-size")?.toFloat() ?: d.outlineSize,
+                outlineColor = mpvColorToArgb(m.getPropertyString("sub-border-color")) ?: d.outlineColor,
+                backgroundColor = mpvColorToArgb(m.getPropertyString("sub-back-color")) ?: d.backgroundColor,
+                shadowOffset = m.getPropertyDouble("sub-shadow-offset")?.toFloat() ?: d.shadowOffset,
+                shadowColor = mpvColorToArgb(m.getPropertyString("sub-shadow-color")) ?: d.shadowColor,
+                bold = m.getPropertyBoolean("sub-bold") ?: d.bold,
+                italic = m.getPropertyBoolean("sub-italic") ?: d.italic,
+                alignX = m.getPropertyString("sub-align-x")?.let(::parseAlignX) ?: d.alignX,
+                alignY = m.getPropertyString("sub-align-y")?.let(::parseAlignY) ?: d.alignY,
+                marginX = m.getPropertyInt("sub-margin-x") ?: d.marginX,
+                marginY = m.getPropertyInt("sub-margin-y") ?: d.marginY,
+                position = m.getPropertyInt("sub-pos") ?: d.position,
+            )
+        }.getOrDefault(d)
+    }
 
     /**
      * Single funnel for observed positions: confirms pending seeks for
@@ -428,16 +491,14 @@ class MpvPlayerEngine(
                 val lang = m.getPropertyString("track-list/$i/lang").orEmpty()
                 val title = m.getPropertyString("track-list/$i/title").orEmpty()
                 val external = m.getPropertyString("track-list/$i/external") == "yes"
-                val label = buildString {
-                    append("#").append(id)
-                    if (title.isNotBlank()) append(" ").append(title)
-                    if (lang.isNotBlank()) append(" (").append(lang).append(")")
-                    if (external) append(" [ext]")
-                }
                 when (type) {
-                    "audio" -> audio.add(AudioTrack(mpvId = id, label = label))
+                    "audio" -> audio.add(AudioTrack(mpvId = id, label = audioTrackLabel(id, lang, title)))
                     "sub" -> subs.add(
-                        SubtitleTrackInfo(mpvId = id, label = label, isExternal = external),
+                        SubtitleTrackInfo(
+                            mpvId = id,
+                            label = subtitleTrackLabel(id, lang, title, external),
+                            isExternal = external,
+                        ),
                     )
                 }
             }

@@ -9,6 +9,7 @@ import com.librium.player.DefaultPlayerController
 import com.librium.player.MpvPlayerEngine
 import com.librium.player.PlayerController
 import com.librium.player.PlayerState
+import com.librium.player.SubtitleAppearance
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -44,6 +45,8 @@ class PlayerViewModel(
     fun setSubtitlesEnabled(enabled: Boolean) = controller.setSubtitlesEnabled(enabled)
     fun addExternalSubtitle(uri: String) = controller.addExternalSubtitle(uri)
     fun setSubtitleDelay(delayMs: Long) = controller.setSubtitleDelay(delayMs)
+    fun setSubtitleAppearance(appearance: SubtitleAppearance) =
+        controller.setSubtitleAppearance(appearance)
     fun toggleFullscreen() = controller.toggleFullscreen()
     fun setFullscreen(fullscreen: Boolean) = controller.setFullscreen(fullscreen)
     fun clearError() = controller.clearError()

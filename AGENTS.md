@@ -10,12 +10,18 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 
 ## Structure (`com.librium`)
 
-- `player/` — `PlayerState`, `PlayerEngine` (interface), `MpvPlayerEngine` (libmpv impl), `PlayerController`/`DefaultPlayerController`. UI talks to `PlayerViewModel` → `PlayerController`, never to `MPVLib` directly.
+- `player/` — `PlayerState` (+ `subtitleAppearance`), `PlayerEngine` (interface), `MpvPlayerEngine` (libmpv impl), `PlayerController`/`DefaultPlayerController`, `SubtitleAppearance` (libass tuning + color converters), `TrackLabels` (pure track label formatting). UI talks to `PlayerViewModel` → `PlayerController`, never to `MPVLib` directly.
 - `media/` — `MediaResolver` (SAF helpers, no broad storage access).
-- `subtitle/` — pure-Kotlin subtitle engine (no Android/UI/playback deps except `SubtitleRepository`, which only uses `ContentResolver`): models + `rawHeader`/`extraSections` preservation, robust SRT/VTT/ASS/SSA parsers, `DefaultSubtitleAnalyzer` (structured issues + stats), timing ops + `DefaultSubtitleSynchronizer` (offset/FPS/drift/preview), immutable editor ops, SRT/VTT/ASS export writers.
-- `ui/subtitle/` — `SubtitleEditorViewModel` (load/analyze/transform/edit/export state, IO off main thread) + `SubtitleInfoSheet` (info, sync controls, issues, export). libmpv/libass still renders; live delay goes through `PlayerEngine.setSubtitleDelay` (mpv `sub-delay`).
-- `ui/player/` — `PlayerScreen`, `MpvVideoSurface` (SurfaceView), `PlayerViewModel` (activity-scoped, owns engine). Fullscreen is app-driven: landscape in, portrait out (`FullscreenOrientation`); surface attach/detach is serialized (`SurfaceAttachment`).
+- `subtitle/` — pure-Kotlin subtitle engine (no Android/UI/playback deps except `SubtitleRepository`, which only uses `ContentResolver`): models + `rawHeader`/`extraSections` preservation, robust SRT/VTT/ASS/SSA parsers, `DefaultSubtitleAnalyzer` (structured issues + stats), timing ops + `DefaultSubtitleSynchronizer` (offset/FPS/drift/preview), immutable editor ops, `UndoHistory`, SRT/VTT/ASS export writers.
+- `ui/subtitle/` — `SubtitleEditorViewModel` (load/analyze/transform/edit/undo/export state, IO off main thread; takes an optional test scope) + tabbed `SubtitleInfoSheet` toolkit (Info, Sync incl. pivot rescale, Analyze grouped by type, lazy cue Editor, Export with filename, live libass Style). libmpv/libass still renders; live delay goes through `PlayerEngine.setSubtitleDelay` (mpv `sub-delay`).
+- `ui/player/` — `PlayerScreen` (slice-collected chrome/progress/transport/volume scopes + labeled More menu), `MpvVideoSurface` (SurfaceView), `PlayerViewModel` (activity-scoped, owns engine), `PlayerUiStatus` (derived, never stored). Fullscreen is app-driven: landscape in, portrait out (`FullscreenOrientation`); surface attach/detach is serialized (`SurfaceAttachment`).
 - `MainActivity` hosts `PlayerScreen` only (`singleTask` + `onNewIntent` for ACTION_VIEW video). No navigation yet.
+
+## Player UI architecture
+
+- One `StateFlow<PlayerState>` flows down; each scope collects a `distinctUntilChanged` slice (`PlayerChrome`, progress, transport, volume) so 4 Hz position ticks recompose only the seek row.
+- Embedded tracks ("Subtitle tracks" / "Audio tracks" dialogs) select mpv tracks and never touch files. External files ("Load subtitle file" menu item) load into the editor VM + toolkit sheet and never touch track selection. Keep these paths separate.
+- Toolkit flow: load file -> Info/Sync/Analyze/Edit/Export/Style tabs -> explicit Apply/Save only. Document edits are immutable snapshots with bounded undo (25). Style tab writes straight to mpv (`sub-*` props) and never edits the document.
 
 ## libmpv gotchas
 
