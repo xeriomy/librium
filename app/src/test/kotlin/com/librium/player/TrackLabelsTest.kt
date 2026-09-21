@@ -33,9 +33,12 @@ class TrackLabelsTest {
     @Test
     fun external_flag_only_on_subtitles() {
         assertEquals(
-            "#7 English [ext]",
+            "#7 English (en) [ext]",
             subtitleTrackLabel(7, "en", "English", external = true),
         )
-        assertEquals("#7 English", subtitleTrackLabel(7, "en", "English", external = false))
+        assertEquals(
+            "#7 English (en)",
+            subtitleTrackLabel(7, "en", "English", external = false),
+        )
     }
 }

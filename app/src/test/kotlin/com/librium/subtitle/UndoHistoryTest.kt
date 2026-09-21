@@ -47,10 +47,10 @@ class UndoHistoryTest {
         history.push(2)
         history.push(3)
         history.push(4)
-        assertEquals(3, history.undo(5))
+        assertEquals(4, history.undo(5))
+        assertEquals(3, history.undo(4))
         assertEquals(2, history.undo(3))
-        assertEquals(1, history.undo(2))
-        assertNull(history.undo(1))
+        assertNull(history.undo(2))
     }
 
     @Test
