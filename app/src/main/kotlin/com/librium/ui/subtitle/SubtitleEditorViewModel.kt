@@ -8,14 +8,18 @@ import com.librium.core.LibLog
 import com.librium.subtitle.AnalyzerOptions
 import com.librium.subtitle.DefaultSubtitleAnalyzer
 import com.librium.subtitle.DefaultSubtitleSynchronizer
+import com.librium.subtitle.SUBTITLE_LOAD_FAILED_MESSAGE
 import com.librium.subtitle.SubtitleAnalysisResult
 import com.librium.subtitle.SubtitleAnalyzer
 import com.librium.subtitle.SubtitleDocument
+import com.librium.subtitle.SubtitleFileDecision
+import com.librium.subtitle.SubtitleFileValidation
 import com.librium.subtitle.SubtitleFormat
 import com.librium.subtitle.SubtitleRepository
 import com.librium.subtitle.SubtitleSynchronizer
 import com.librium.subtitle.TimeMapping
 import com.librium.subtitle.TimingTransform
+import com.librium.subtitle.UNSUPPORTED_SUBTITLE_MESSAGE
 import com.librium.subtitle.addEvent
 import com.librium.subtitle.mapRange
 import com.librium.subtitle.TimeRange
@@ -76,15 +80,30 @@ class SubtitleEditorViewModel(
     // --- loading ---
 
     fun loadExternal(resolver: ContentResolver, uri: Uri, displayName: String?) {
+        // Defense in depth: the picker validates first, but this entry point
+        // enforces it again so no caller can smuggle an invalid file into
+        // the document state.
+        when (val decision = SubtitleFileValidation.validate(displayName, uri.toString())) {
+            is SubtitleFileDecision.Reject -> {
+                LibLog.w(LibLog.SUB) {
+                    "rejected ${decision.reason}: ${decision.detail}"
+                }
+                _state.update {
+                    it.copy(isLoading = false, error = UNSUPPORTED_SUBTITLE_MESSAGE)
+                }
+                return
+            }
+            is SubtitleFileDecision.Accept -> Unit
+        }
         _state.update {
             it.copy(isLoading = true, error = null, notice = null, analysis = null)
         }
         viewModelScope.launch {
             val doc = repository.loadDocument(resolver, uri, displayName)
             if (doc == null) {
-                LibLog.w(LibLog.SUB) { "unsupported subtitle: $displayName" }
+                LibLog.w(LibLog.SUB) { "could not load subtitle: $displayName" }
                 _state.update {
-                    it.copy(isLoading = false, error = "Unsupported subtitle file.")
+                    it.copy(isLoading = false, error = SUBTITLE_LOAD_FAILED_MESSAGE)
                 }
             } else {
                 LibLog.i(LibLog.SUB) {

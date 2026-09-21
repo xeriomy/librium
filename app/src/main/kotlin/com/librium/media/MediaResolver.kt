@@ -23,10 +23,20 @@ object MediaResolver {
     val VIDEO_MIME_FILTER: Array<String> = arrayOf("video/*")
 
     /**
-     * Subtitle pickers accept any MIME type because ASS/SSA mappings vary
-     * by device; [isSupportedSubtitle] validates the extension instead.
+     * MIME types offered to Storage Access Framework providers for subtitle
+     * picking. Mappings are inconsistent across providers (notably for
+     * .ass/.ssa, often served as octet-stream), so this list is intentionally
+     * broad — but it never admits image, video, audio, PDF, or archive
+     * types, and the final extension check still happens in-app.
      */
-    val SUBTITLE_MIME_FILTER: Array<String> = arrayOf("*/*")
+    val SUBTITLE_MIME_TYPES: Array<String> = arrayOf(
+        "text/plain",
+        "text/vtt",
+        "application/x-subrip",
+        "text/x-ssa",
+        "application/x-ass",
+        "application/octet-stream",
+    )
 
     val SUPPORTED_SUBTITLE_EXTENSIONS: Set<String> = setOf("srt", "ass", "ssa", "vtt")
 

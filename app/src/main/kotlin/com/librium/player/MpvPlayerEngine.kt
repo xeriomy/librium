@@ -40,10 +40,29 @@ class MpvPlayerEngine(
     @Volatile
     private var observeRegistered = false
 
-    @Volatile
-    private var surfaceAttached = false
-
     private val lifecycle = EngineLifecycle()
+    private val seekTracker = SeekTracker()
+
+    /**
+     * Surface attach/detach runs on a dedicated serial worker so the
+     * ordered SurfaceHolder callbacks (destroy-old, create-new) stay
+     * ordered through the off-main-thread hop. Anything else would let a
+     * delayed detach kill a fresh attach after rotation.
+     */
+    private val surfaceScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val surfaces = SurfaceAttachment(
+        surfaceScope,
+        object : SurfaceAttachment.Backend {
+            override fun hasInstance(): Boolean = mpv != null
+            override fun attachNative(surface: Any) {
+                (mpv ?: error("no mpv instance")).attachSurface(surface as Surface)
+            }
+            override fun detachNative() {
+                (mpv ?: error("no mpv instance")).detachSurface()
+            }
+        },
+    )
 
     private var pollJob: Job? = null
 
@@ -97,6 +116,8 @@ class MpvPlayerEngine(
         LibLog.i(LibLog.MPV) { "releasing libmpv" }
         pollJob?.cancel()
         pollJob = null
+        surfaceScope.cancel()
+        surfaces.reset()
         scope.launch {
             try {
                 mpv?.let {
@@ -110,7 +131,6 @@ class MpvPlayerEngine(
                 // Best effort during teardown.
             } finally {
                 mpv = null
-                surfaceAttached = false
                 scope.cancel()
             }
         }
@@ -140,18 +160,40 @@ class MpvPlayerEngine(
 
     override fun seekTo(positionMs: Long) {
         val target = positionMs.coerceAtLeast(0L)
+        LibLog.i(LibLog.PLAYER) { "seek requested to ${target}ms (exact)" }
+        seekTracker.onSeekRequested(target, "absolute-exact")
         scope.launch {
             val m = mpv ?: return@launch
             runCatching {
                 m.setPropertyDouble("time-pos", target / 1000.0)
             }.onFailure { e ->
+                LibLog.e(LibLog.MPV, e) { "seek failed" }
                 _state.update { it.copy(error = "Seek failed: ${e.message}") }
             }
         }
     }
 
     override fun seekBy(deltaMs: Long) {
-        seekTo((_state.value.positionMs + deltaMs).coerceAtLeast(0L))
+        // Relative keyframe seek: the demuxer jumps straight to the nearest
+        // keyframe without the exact-seek forward-decode pass, which keeps
+        // ±10s skips fast on local files. No base position is needed, so a
+        // stale polled position can never compound across rapid presses.
+        // Slider scrubbing still uses exact absolute seeks via seekTo.
+        val command = SeekCommands.relativeSkip(deltaMs)
+        LibLog.i(LibLog.PLAYER) { "seek requested by ${deltaMs}ms (relative+keyframes)" }
+        seekTracker.onSeekRequested(
+            (_state.value.positionMs + deltaMs).coerceAtLeast(0L),
+            "relative+keyframes",
+        )
+        scope.launch {
+            val m = mpv ?: return@launch
+            LibLog.d(LibLog.MPV) { "seek command sent" }
+            runCatching { m.command(command) }
+                .onFailure { e ->
+                    LibLog.e(LibLog.MPV, e) { "seek failed" }
+                    _state.update { it.copy(error = "Seek failed: ${e.message}") }
+                }
+        }
     }
 
     override fun setVolume(volume01: Int) {
@@ -223,29 +265,11 @@ class MpvPlayerEngine(
     }
 
     override fun attachSurface(surface: Surface) {
-        scope.launch {
-            val m = mpv
-            if (m == null) {
-                LibLog.d(LibLog.MPV) { "attachSurface without instance; ignored" }
-                return@launch
-            }
-            runCatching {
-                if (surfaceAttached) m.detachSurface()
-                m.attachSurface(surface)
-                surfaceAttached = true
-            }.onFailure { e ->
-                LibLog.e(LibLog.MPV, e) { "attachSurface failed" }
-            }
-        }
+        surfaces.attach(surface)
     }
 
     override fun detachSurface() {
-        scope.launch {
-            if (!surfaceAttached) return@launch
-            surfaceAttached = false
-            runCatching { mpv?.detachSurface() }
-                .onFailure { e -> LibLog.e(LibLog.MPV, e) { "detachSurface failed" } }
-        }
+        surfaces.detach()
     }
 
     // --- MPVLib.EventObserver (called on mpv's event thread) ---
@@ -263,8 +287,15 @@ class MpvPlayerEngine(
 
     override fun eventProperty(property: String, value: Double) {
         when (property) {
-            "time-pos" -> _state.update {
-                it.copy(positionMs = (value * 1000).toLong().coerceAtLeast(0L))
+            "time-pos" -> {
+                val ms = (value * 1000).toLong().coerceAtLeast(0L)
+                seekTracker.onPositionChanged(ms)?.let { landing ->
+                    LibLog.i(LibLog.MPV) {
+                        "seek completed (${landing.mode}): target=${landing.targetMs}ms " +
+                            "landed=${landing.landedMs}ms in ${landing.latencyMs}ms"
+                    }
+                }
+                _state.update { it.copy(positionMs = ms) }
             }
             "duration" -> _state.update {
                 it.copy(durationMs = (value * 1000).toLong().coerceAtLeast(0L))
@@ -309,6 +340,9 @@ class MpvPlayerEngine(
             MPVLib.MpvEvent.MPV_EVENT_END_FILE -> {
                 _state.update { it.copy(isLoading = false) }
             }
+            MPVLib.MpvEvent.MPV_EVENT_SEEK -> {
+                LibLog.d(LibLog.MPV) { "seek event received" }
+            }
             MPVLib.MpvEvent.MPV_EVENT_SHUTDOWN -> {
                 _state.update { it.copy(error = "Playback engine shut down") }
             }
@@ -334,7 +368,14 @@ class MpvPlayerEngine(
             runCatching { m.command(cmd) }
                 .onFailure { e ->
                     LibLog.e(LibLog.MPV, e) { "command ${cmd.firstOrNull()} failed" }
-                    _state.update { it.copy(isLoading = false, error = e.message) }
+                    // Subtitle loading must never take playback down with it:
+                    // keep the player alive on the current valid state.
+                    val message = if (cmd.firstOrNull() == "sub-add") {
+                        SUBTITLE_LOAD_FAILED_FALLBACK
+                    } else {
+                        e.message
+                    }
+                    _state.update { it.copy(isLoading = false, error = message) }
                 }
         }
     }
@@ -409,6 +450,13 @@ class MpvPlayerEngine(
         private const val POLL_MS = 500L
 
         /**
+         * Matches the subtitle error wording without coupling player to the
+         * subtitle package: a failed sub-add keeps the current valid state.
+         */
+        private const val SUBTITLE_LOAD_FAILED_FALLBACK =
+            "Could not load subtitle. Your current subtitle was not changed."
+
+        /**
          * Minimal phone defaults adapted from mpv-android's MPVView.
          * Must be set before [MPVLib.init].
          */
@@ -425,6 +473,10 @@ class MpvPlayerEngine(
             mpv.setOptionString("keep-open", "yes")
             mpv.setOptionString("tls-verify", "yes")
             mpv.setOptionString("input-default-bindings", "yes")
+            // Never stretch: keep the source aspect ratio and letterbox /
+            // pillarbox (this is also mpv's default; stated explicitly so a
+            // future option change cannot silently break it).
+            mpv.setOptionString("video-aspect-override", "no")
         }
 
         private fun observeProperties(mpv: MPVLib) {

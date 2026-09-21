@@ -2,7 +2,6 @@ package com.librium.ui.player
 
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -63,7 +62,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.librium.core.LibLog
 import com.librium.media.MediaResolver
+import com.librium.subtitle.SUBTITLE_LOAD_FAILED_MESSAGE
+import com.librium.subtitle.SubtitleFileDecision
+import com.librium.subtitle.SubtitleFileValidation
+import com.librium.subtitle.SubtitleRejectReason
+import com.librium.subtitle.UNSUPPORTED_SUBTITLE_MESSAGE
 import com.librium.ui.subtitle.SubtitleEditorViewModel
 import com.librium.ui.subtitle.SubtitleInfoSheet
 import kotlinx.coroutines.delay
@@ -87,6 +92,7 @@ fun PlayerScreen(
     var subtitleToolsOpen by remember { mutableStateOf(false) }
     var volumeExpanded by remember { mutableStateOf(false) }
     var scrubMs by remember { mutableStateOf<Long?>(null) }
+    var subtitleBanner by remember { mutableStateOf<String?>(null) }
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -104,34 +110,46 @@ fun PlayerScreen(
         }
     }
     val subtitlePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
+        OpenSubtitleDocument(),
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            val name = MediaResolver.displayName(context.contentResolver, uri)
-            if (MediaResolver.isSupportedSubtitle(name)) {
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = MediaResolver.displayName(context.contentResolver, uri)
+        when (val decision = SubtitleFileValidation.validate(name, uri.toString())) {
+            is SubtitleFileDecision.Accept -> {
+                // Persist access only for files we actually accept.
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                subtitleBanner = null
                 viewModel.addExternalSubtitle(uri.toString())
                 subtitleVm.loadExternal(context.contentResolver, uri, name)
                 subtitleToolsOpen = true
             }
-            controlsVisible = true
+            is SubtitleFileDecision.Reject -> {
+                // Invalid files never reach the parser, mpv, or any state:
+                // keep everything untouched and explain what happened.
+                LibLog.d(LibLog.SUB) {
+                    "subtitle rejected (${decision.reason}): ${decision.detail}"
+                }
+                subtitleBanner = when (decision.reason) {
+                    SubtitleRejectReason.MISSING_NAME -> SUBTITLE_LOAD_FAILED_MESSAGE
+                    SubtitleRejectReason.UNSUPPORTED_EXTENSION -> UNSUPPORTED_SUBTITLE_MESSAGE
+                }
+            }
         }
+        controlsVisible = true
     }
 
-    // Fullscreen: lock landscape + hide system bars while active.
+    // Fullscreen drives orientation explicitly (landscape in, portrait out)
+    // so UI state and Activity orientation can never disagree.
     val activity = context as? Activity
     LaunchedEffect(state.isFullscreen) {
         activity?.let {
-            it.requestedOrientation = if (state.isFullscreen) {
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            } else {
-                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            }
+            it.requestedOrientation =
+                FullscreenOrientation.requestedOrientation(state.isFullscreen)
             val window = it.window
             val insets = WindowCompat.getInsetsController(window, window.decorView)
             if (state.isFullscreen) {
@@ -193,25 +211,50 @@ fun PlayerScreen(
             }
         }
 
-        state.error?.let { error ->
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(12.dp)
-                    .background(Color(0xFF7F1D1D), MaterialTheme.shapes.small)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = error,
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = viewModel::clearError) {
-                    Text("Dismiss", color = Color.White)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            state.error?.let { error ->
+                Row(
+                    modifier = Modifier
+                        .background(Color(0xFF7F1D1D), MaterialTheme.shapes.small)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = error,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::clearError) {
+                        Text("Dismiss", color = Color.White)
+                    }
+                }
+            }
+            subtitleBanner?.let { banner ->
+                Row(
+                    modifier = Modifier
+                        .background(Color(0xFF7F1D1D), MaterialTheme.shapes.small)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = banner,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { subtitleBanner = null }) {
+                        Text("Dismiss", color = Color.White)
+                    }
                 }
             }
         }
@@ -290,7 +333,7 @@ fun PlayerScreen(
                     IconButton(onClick = { videoPicker.launch(MediaResolver.VIDEO_MIME_FILTER) }) {
                         Icon(Icons.Filled.FolderOpen, contentDescription = "Open video", tint = Color.White)
                     }
-                    IconButton(onClick = { subtitlePicker.launch(MediaResolver.SUBTITLE_MIME_FILTER) }) {
+                    IconButton(onClick = { subtitlePicker.launch(Unit) }) {
                         Icon(Icons.Filled.Subtitles, contentDescription = "Open subtitle file", tint = Color.White)
                     }
                     IconButton(onClick = { viewModel.seekBy(-10_000) }, enabled = state.canSeek) {

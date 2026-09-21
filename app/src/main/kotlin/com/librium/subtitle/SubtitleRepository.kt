@@ -25,19 +25,30 @@ class SubtitleRepository {
         parseDocument(displayName ?: uri.toString(), text)
     }
 
-    /** Parses text, falling back across formats for misnamed files. */
+    /**
+     * Parses text, falling back across formats for misnamed files.
+     *
+     * Safe-result policy: blank input, parser exceptions, and documents
+     * with zero usable cues all yield null, so callers keep their current
+     * valid subtitle instead of adopting a broken one.
+     */
     fun parseDocument(displayName: String?, text: String): SubtitleDocument? {
-        val name = displayName ?: "subtitle"
-        val format = formatForFileName(name)
-        val direct = parserFor(format)
-        if (direct != null) return direct.parse(name, text)
-        // Unknown extension: try every parser, keep the richest result.
-        val candidates = listOf(
-            SrtSubtitleParser().parse(name, text),
-            VttSubtitleParser().parse(name, text),
-            AssSubtitleParser().parse(name, text),
-        )
-        return candidates.maxByOrNull { it.events.size }?.takeIf { it.events.isNotEmpty() }
+        if (text.isBlank()) return null
+        return runCatching {
+            val name = displayName ?: "subtitle"
+            val format = formatForFileName(name)
+            val direct = parserFor(format)
+            if (direct != null) {
+                return@runCatching direct.parse(name, text).takeIf { it.events.isNotEmpty() }
+            }
+            // Unknown extension: try every parser, keep the richest result.
+            val candidates = listOf(
+                SrtSubtitleParser().parse(name, text),
+                VttSubtitleParser().parse(name, text),
+                AssSubtitleParser().parse(name, text),
+            )
+            candidates.maxByOrNull { it.events.size }?.takeIf { it.events.isNotEmpty() }
+        }.getOrNull()
     }
 
     /** Serializes [document] and writes it to [uri]. */

@@ -14,8 +14,8 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 - `media/` — `MediaResolver` (SAF helpers, no broad storage access).
 - `subtitle/` — pure-Kotlin subtitle engine (no Android/UI/playback deps except `SubtitleRepository`, which only uses `ContentResolver`): models + `rawHeader`/`extraSections` preservation, robust SRT/VTT/ASS/SSA parsers, `DefaultSubtitleAnalyzer` (structured issues + stats), timing ops + `DefaultSubtitleSynchronizer` (offset/FPS/drift/preview), immutable editor ops, SRT/VTT/ASS export writers.
 - `ui/subtitle/` — `SubtitleEditorViewModel` (load/analyze/transform/edit/export state, IO off main thread) + `SubtitleInfoSheet` (info, sync controls, issues, export). libmpv/libass still renders; live delay goes through `PlayerEngine.setSubtitleDelay` (mpv `sub-delay`).
-- `ui/player/` — `PlayerScreen`, `MpvVideoSurface` (SurfaceView), `PlayerViewModel` (activity-scoped, owns engine).
-- `MainActivity` hosts `PlayerScreen` only. No navigation yet.
+- `ui/player/` — `PlayerScreen`, `MpvVideoSurface` (SurfaceView), `PlayerViewModel` (activity-scoped, owns engine). Fullscreen is app-driven: landscape in, portrait out (`FullscreenOrientation`); surface attach/detach is serialized (`SurfaceAttachment`).
+- `MainActivity` hosts `PlayerScreen` only (`singleTask` + `onNewIntent` for ACTION_VIEW video). No navigation yet.
 
 ## libmpv gotchas
 
@@ -30,6 +30,27 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 - `./gradlew testDebugUnitTest` — unit tests (subtitle parsers)
 - `./gradlew testDebugUnitTest --tests "com.librium.subtitle.SubtitleParserTest"` — single class
 - CI: `.github/workflows/android.yml` runs assemble + unit tests. Local builds need Android SDK (`ANDROID_HOME`); never commit `local.properties`.
+
+## Manual device checklist (requires a real device; CI cannot cover these)
+
+Playback:
+[ ] portrait playback (aspect preserved, no stretch)
+[ ] landscape playback (letterbox/pillarbox, no stretch)
+[ ] portrait -> landscape, landscape -> portrait
+[ ] repeated fullscreen toggles
+[ ] seek -10s / +10s feels instant on local files
+[ ] repeated seeks (watch logcat `Librium:Mpv` for `seek completed ... in Xms`)
+[ ] background/foreground (surface re-attaches, no duplicate instances)
+
+Subtitles:
+[ ] SRT, ASS, SSA, VTT, Arabic subtitle
+[ ] invalid image / PDF / video as subtitle -> "Unsupported subtitle file..." banner, player keeps working
+[ ] malformed subtitle -> "Could not load subtitle..." banner, previous subtitle unchanged
+[ ] content:// URI, Unicode filename
+
+External playback:
+[ ] Open video from Nouvio (or any file manager) while Librium is closed
+[ ] Open video while Librium is already running (no second player instance)
 
 ## Workflow
 
