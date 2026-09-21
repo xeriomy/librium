@@ -36,6 +36,7 @@ class PlayerViewModel(
         controller.openVideo(uri, displayName)
 
     fun togglePlayPause() = controller.togglePlayPause()
+    fun pause() = controller.pause()
     fun seekTo(positionMs: Long) = controller.seekTo(positionMs)
     fun seekBy(deltaMs: Long) = controller.seekBy(deltaMs)
     fun setVolume(volume: Int) = controller.setVolume(volume)
