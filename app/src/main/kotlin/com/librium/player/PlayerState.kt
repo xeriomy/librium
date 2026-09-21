@@ -32,6 +32,8 @@ data class PlayerState(
     val subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     val selectedSubtitleId: Int = -1,
     val subtitlesEnabled: Boolean = true,
+    /** Live mpv `sub-delay` in milliseconds (positive delays subtitles). */
+    val subtitleDelayMs: Long = 0L,
 ) {
     val isPlaying: Boolean get() = hasMedia && !isPaused && !isLoading
     val canSeek: Boolean get() = hasMedia && durationMs > 0L

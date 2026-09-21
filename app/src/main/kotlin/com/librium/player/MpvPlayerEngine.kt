@@ -185,6 +185,15 @@ class MpvPlayerEngine(
         mpvCommand(arrayOf("sub-add", uri, "select"))
     }
 
+    override fun setSubtitleDelay(delayMs: Long) {
+        scope.launch {
+            val m = mpv ?: return@launch
+            runCatching {
+                m.setPropertyDouble("sub-delay", delayMs / 1000.0)
+            }
+        }
+    }
+
     override fun attachSurface(surface: Surface) {
         scope.launch {
             runCatching { mpv?.attachSurface(surface) }
@@ -220,6 +229,9 @@ class MpvPlayerEngine(
             }
             "volume" -> _state.update {
                 it.copy(volume = value.toInt().coerceIn(0, 100))
+            }
+            "sub-delay" -> _state.update {
+                it.copy(subtitleDelayMs = (value * 1000).toLong())
             }
         }
     }
@@ -377,6 +389,7 @@ class MpvPlayerEngine(
             mpv.observeProperty("aid", f.MPV_FORMAT_STRING)
             mpv.observeProperty("sid", f.MPV_FORMAT_STRING)
             mpv.observeProperty("sub-visibility", f.MPV_FORMAT_FLAG)
+            mpv.observeProperty("sub-delay", f.MPV_FORMAT_DOUBLE)
             mpv.observeProperty("track-list", f.MPV_FORMAT_NONE)
             mpv.observeProperty("media-title", f.MPV_FORMAT_STRING)
             mpv.observeProperty("eof-reached", f.MPV_FORMAT_FLAG)

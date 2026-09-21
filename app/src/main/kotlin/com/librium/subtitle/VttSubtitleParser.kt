@@ -2,20 +2,27 @@ package com.librium.subtitle
 
 private val VTT_RANGE = Regex("""(.+?)\s*-->\s*(.+)""")
 
+/**
+ * VTT parser for realistic files: BOM, `WEBVTT` header variants, cue
+ * identifiers, cue settings (`align:`, `position:`, ...), multiline cues,
+ * and NOTE/STYLE/REGION blocks. Identifiers and settings are preserved on
+ * the event; STYLE/REGION blocks are preserved in [SubtitleDocument.rawHeader]
+ * for export. File order is preserved; broken events are kept for analysis.
+ */
 class VttSubtitleParser : SubtitleParser {
     override val supportedFormats: Set<SubtitleFormat> = setOf(SubtitleFormat.VTT)
 
     override fun parse(sourceName: String?, text: String): SubtitleDocument {
-        val normalized = text.replace("\r\n", "\n")
+        val normalized = stripBom(text).replace("\r\n", "\n").replace("\r", "\n")
         val lines = normalized.lines()
-        // Skip WEBVTT header and any NOTE/STYLE blocks up front.
         var cursor = 0
         while (cursor < lines.size && lines[cursor].trim().isEmpty()) cursor++
-        if (cursor < lines.size && lines[cursor].startsWith("WEBVTT")) cursor++
+        if (cursor < lines.size && lines[cursor].trimStart().startsWith("WEBVTT")) cursor++
 
+        val headerExtras = mutableListOf<String>()
         val events = mutableListOf<SubtitleEvent>()
-        var index = 0
-        var pendingId: String? = null
+        var id = 0
+        var pendingIdentifier: String? = null
         var i = cursor
         while (i < lines.size) {
             val line = lines[i].trim()
@@ -23,59 +30,68 @@ class VttSubtitleParser : SubtitleParser {
                 i++
                 continue
             }
-            if (line.startsWith("NOTE") || line.startsWith("STYLE") || line.startsWith("REGION")) {
-                // Skip multi-line metadata blocks.
-                i++
-                while (i < lines.size && lines[i].trim().isNotEmpty()) i++
+            val keyword = line.substringBefore(' ', line).uppercase()
+            if (keyword == "NOTE" || keyword == "STYLE" || keyword == "REGION") {
+                // Preserve STYLE/REGION for export; NOTE is commentary, keep it too.
+                val block = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().isNotEmpty()) {
+                    block.add(lines[i])
+                    i++
+                }
+                headerExtras.add(block.joinToString("\n"))
                 continue
             }
             val range = VTT_RANGE.find(line)
             if (range == null) {
                 // May be a cue identifier preceding the timestamp line.
-                pendingId = line
+                pendingIdentifier = line
                 i++
                 continue
             }
             val start = parseTimestamp(range.groupValues[1].trim())
             if (start == null) {
                 i++
-                pendingId = null
+                pendingIdentifier = null
                 continue
             }
-            val endToken = range.groupValues[2].trim().split(" ").first()
-            val end = parseTimestamp(endToken)
+            val tail = range.groupValues[2].trim().split(Regex("\\s+"))
+            val end = parseTimestamp(tail.first())
             if (end == null) {
                 i++
-                pendingId = null
+                pendingIdentifier = null
                 continue
             }
+            val settings = tail.drop(1).joinToString(" ").ifBlank { null }
             i++
             val textLines = mutableListOf<String>()
             while (i < lines.size && lines[i].trim().isNotEmpty()) {
                 textLines.add(lines[i])
                 i++
             }
-            pendingId = null
             val caption = textLines.joinToString("\n").trim()
-            if (caption.isEmpty() || end <= start) continue
             events.add(
                 SubtitleEvent(
-                    index = index++,
+                    id = id++,
                     startMs = start,
                     endMs = end,
                     text = caption,
+                    identifier = pendingIdentifier,
+                    cueSettings = settings,
                 ),
             )
+            pendingIdentifier = null
         }
         return SubtitleDocument(
             format = SubtitleFormat.VTT,
-            events = events.sortedBy { it.startMs },
+            events = events,
             sourceName = sourceName,
+            rawHeader = headerExtras.joinToString("\n\n").ifBlank { null },
         )
     }
 
     /**
-     * Accepts `MM:SS.mmm` and `HH:MM:SS.mmm` (dot or comma decimals).
+     * Accepts `MM:SS.mmm` and `HH:MM:SS.mmm` (dot or comma decimals,
+     * 1-3 digit milliseconds).
      */
     internal fun parseTimestamp(value: String): Long? {
         val clean = value.trim().replace(',', '.')

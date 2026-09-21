@@ -41,6 +41,7 @@ class PlayerViewModel(
     fun selectSubtitleTrack(mpvId: Int?) = controller.selectSubtitleTrack(mpvId)
     fun setSubtitlesEnabled(enabled: Boolean) = controller.setSubtitlesEnabled(enabled)
     fun addExternalSubtitle(uri: String) = controller.addExternalSubtitle(uri)
+    fun setSubtitleDelay(delayMs: Long) = controller.setSubtitleDelay(delayMs)
     fun toggleFullscreen() = controller.toggleFullscreen()
     fun setFullscreen(fullscreen: Boolean) = controller.setFullscreen(fullscreen)
     fun clearError() = controller.clearError()

@@ -64,15 +64,18 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.librium.media.MediaResolver
+import com.librium.ui.subtitle.SubtitleEditorViewModel
+import com.librium.ui.subtitle.SubtitleInfoSheet
 import kotlinx.coroutines.delay
 
 /**
- * Phase 1 player screen: video surface + overlay controls, dark UI.
+ * Player screen: video surface + overlay controls, dark UI.
  * Single screen, no navigation. All state comes from [PlayerViewModel].
  */
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel = viewModel(),
+    subtitleVm: SubtitleEditorViewModel = viewModel(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -81,6 +84,7 @@ fun PlayerScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var audioDialogOpen by remember { mutableStateOf(false) }
     var subtitleDialogOpen by remember { mutableStateOf(false) }
+    var subtitleToolsOpen by remember { mutableStateOf(false) }
     var volumeExpanded by remember { mutableStateOf(false) }
     var scrubMs by remember { mutableStateOf<Long?>(null) }
 
@@ -112,6 +116,8 @@ fun PlayerScreen(
             val name = MediaResolver.displayName(context.contentResolver, uri)
             if (MediaResolver.isSupportedSubtitle(name)) {
                 viewModel.addExternalSubtitle(uri.toString())
+                subtitleVm.loadExternal(context.contentResolver, uri, name)
+                subtitleToolsOpen = true
             }
             controlsVisible = true
         }
@@ -421,6 +427,13 @@ fun PlayerScreen(
                         )
                     }
                     Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = {
+                        subtitleDialogOpen = false
+                        subtitleToolsOpen = true
+                    }) {
+                        Text("Subtitle info, sync & export")
+                    }
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         "Supported: SRT, ASS, SSA, VTT (via libmpv)",
                         style = MaterialTheme.typography.labelSmall,
@@ -431,6 +444,16 @@ fun PlayerScreen(
             confirmButton = {
                 TextButton(onClick = { subtitleDialogOpen = false }) { Text("Close") }
             },
+        )
+    }
+
+    if (subtitleToolsOpen) {
+        SubtitleInfoSheet(
+            editor = subtitleVm,
+            playerDelayMs = state.subtitleDelayMs,
+            videoDurationMs = state.durationMs,
+            onApplyPlayerDelay = viewModel::setSubtitleDelay,
+            onDismiss = { subtitleToolsOpen = false },
         )
     }
 }

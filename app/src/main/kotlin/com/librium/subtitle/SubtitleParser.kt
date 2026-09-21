@@ -18,6 +18,15 @@ fun parserFor(format: SubtitleFormat): SubtitleParser? = when (format) {
     SubtitleFormat.UNKNOWN -> null
 }
 
+/** Removes leading Unicode byte-order marks; call before parsing. */
+internal fun stripBom(text: String): String {
+    var out = text
+    while (out.startsWith(BOM)) out = out.substring(1)
+    return out
+}
+
+private const val BOM = "\uFEFF"
+
 /** Infers format from a file name / URI string. Extension match only. */
 fun formatForFileName(name: String): SubtitleFormat {
     val ext = name.substringAfterLast('.', "").substringBefore('?').lowercase()

@@ -12,7 +12,8 @@ Librium is a Kotlin Android video player (Jetpack Compose) over libmpv. Phase 1 
 
 - `player/` — `PlayerState`, `PlayerEngine` (interface), `MpvPlayerEngine` (libmpv impl), `PlayerController`/`DefaultPlayerController`. UI talks to `PlayerViewModel` → `PlayerController`, never to `MPVLib` directly.
 - `media/` — `MediaResolver` (SAF helpers, no broad storage access).
-- `subtitle/` — `SubtitleDocument/Event/Style/Track`, `SubtitleParser` (+ SRT/VTT/ASS impls), `SubtitleAnalyzer`/`SubtitleSynchronizer` (Phase 2 interfaces only, no impl).
+- `subtitle/` — pure-Kotlin subtitle engine (no Android/UI/playback deps except `SubtitleRepository`, which only uses `ContentResolver`): models + `rawHeader`/`extraSections` preservation, robust SRT/VTT/ASS/SSA parsers, `DefaultSubtitleAnalyzer` (structured issues + stats), timing ops + `DefaultSubtitleSynchronizer` (offset/FPS/drift/preview), immutable editor ops, SRT/VTT/ASS export writers.
+- `ui/subtitle/` — `SubtitleEditorViewModel` (load/analyze/transform/edit/export state, IO off main thread) + `SubtitleInfoSheet` (info, sync controls, issues, export). libmpv/libass still renders; live delay goes through `PlayerEngine.setSubtitleDelay` (mpv `sub-delay`).
 - `ui/player/` — `PlayerScreen`, `MpvVideoSurface` (SurfaceView), `PlayerViewModel` (activity-scoped, owns engine).
 - `MainActivity` hosts `PlayerScreen` only. No navigation yet.
 

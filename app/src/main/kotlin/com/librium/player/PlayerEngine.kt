@@ -33,6 +33,9 @@ interface PlayerEngine {
     fun setSubtitlesEnabled(enabled: Boolean)
     fun addExternalSubtitle(uri: String)
 
+    /** Live subtitle delay applied by the backend (mpv `sub-delay`). */
+    fun setSubtitleDelay(delayMs: Long)
+
     fun attachSurface(surface: Surface)
     fun detachSurface()
 }

@@ -31,6 +31,7 @@ interface PlayerController {
     fun selectSubtitleTrack(mpvId: Int?)
     fun setSubtitlesEnabled(enabled: Boolean)
     fun addExternalSubtitle(uri: String)
+    fun setSubtitleDelay(delayMs: Long)
     fun setFullscreen(fullscreen: Boolean)
     fun toggleFullscreen()
     fun clearError()
@@ -77,6 +78,7 @@ class DefaultPlayerController(
     override fun selectSubtitleTrack(mpvId: Int?) = engine.selectSubtitleTrack(mpvId)
     override fun setSubtitlesEnabled(enabled: Boolean) = engine.setSubtitlesEnabled(enabled)
     override fun addExternalSubtitle(uri: String) = engine.addExternalSubtitle(uri)
+    override fun setSubtitleDelay(delayMs: Long) = engine.setSubtitleDelay(delayMs)
 
     override fun setFullscreen(fullscreen: Boolean) {
         ui.update { it.copy(isFullscreen = fullscreen) }
