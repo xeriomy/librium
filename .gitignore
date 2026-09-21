@@ -9,3 +9,8 @@
 
 # Ignore Gradle build output directory
 build
+
+# Local SDK location / signing secrets — never commit
+local.properties
+*.jks
+*.keystore
