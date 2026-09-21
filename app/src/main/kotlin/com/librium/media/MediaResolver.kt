@@ -22,7 +22,7 @@ object MediaResolver {
     val VIDEO_MIME_FILTER: Array<String> = arrayOf("video/*")
 
     /**
-     * Subtitle pickers use `*/*` because `.ass`/`.ssa` MIME mappings vary
+     * Subtitle pickers accept any MIME type because ASS/SSA mappings vary
      * by device; [isSupportedSubtitle] validates the extension instead.
      */
     val SUBTITLE_MIME_FILTER: Array<String> = arrayOf("*/*")
