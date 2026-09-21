@@ -129,4 +129,21 @@ class DefaultPlayerControllerTest {
         controller.toggleFullscreen()
         assertTrue(!controller.state.value.isFullscreen)
     }
+
+    @Test
+    fun embedded_subtitle_off_forwards_null() {
+        val engine = FakeEngine()
+        val controller = controller(engine)
+        controller.selectSubtitleTrack(null)
+        assertEquals(listOf("sub:null"), engine.calls)
+    }
+
+    @Test
+    fun audio_track_select_forwards_mpv_id() {
+        val engine = FakeEngine()
+        val controller = controller(engine)
+        controller.selectAudioTrack(3)
+        controller.selectAudioTrack(-1)
+        assertEquals(listOf("audio:3", "audio:-1"), engine.calls)
+    }
 }

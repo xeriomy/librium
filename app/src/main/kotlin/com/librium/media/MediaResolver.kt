@@ -1,6 +1,7 @@
 package com.librium.media
 
 import android.content.ContentResolver
+import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -15,6 +16,15 @@ import com.librium.subtitle.formatForFileName
  */
 data class MediaItem(
     val uri: String,
+    val displayName: String,
+)
+
+/**
+ * Result of resolving a picked video: the URI string for the backend plus
+ * a display name for the UI. Produced by [MediaResolver.pickVideo].
+ */
+data class VideoPick(
+    val uriString: String,
     val displayName: String,
 )
 
@@ -49,6 +59,23 @@ object MediaResolver {
     fun isSupportedVideo(nameOrUri: String): Boolean {
         val ext = nameOrUri.substringAfterLast('.', "").substringBefore('?').lowercase()
         return ext in SUPPORTED_VIDEO_EXTENSIONS
+    }
+
+    /**
+     * Resolves a picked video URI: takes a persistable read grant (best
+     * effort) and reads the display name. Makes binder/provider calls, so
+     * callers must invoke this off the main thread. Never throws.
+     */
+    suspend fun pickVideo(resolver: ContentResolver, uri: Uri): VideoPick {
+        runCatching {
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }.onFailure { e ->
+            LibLog.w(LibLog.SAF) { "persist permission failed: ${e.message}" }
+        }
+        return VideoPick(uri.toString(), displayName(resolver, uri))
     }
 
     fun displayName(resolver: ContentResolver, uri: Uri): String {

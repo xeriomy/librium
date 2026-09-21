@@ -45,6 +45,10 @@ import kotlinx.coroutines.withContext
  * Phase 2 editor foundation: state and operations for subtitle analysis,
  * synchronization, editing, and export — without a polished editor UI.
  *
+ * NOTE: no screen currently observes this ViewModel; the previous toolkit
+ * UI was removed pending a redesign. The ViewModel and its tests stay as
+ * the tested foundation that redesign will build on.
+ *
  * Heavy work (file I/O, analysis) runs off the main thread. Document
  * mutations go through the immutable ops in `SubtitleEditorOps`, so every
  * state holds a standalone snapshot and the UI layer stays thin.

@@ -9,12 +9,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.librium.core.LibLog
 import com.librium.media.MediaResolver
 import com.librium.media.VideoIntent
 import com.librium.media.logTag
+import com.librium.ui.home.HomeScreen
 import com.librium.ui.player.PlayerScreen
 import com.librium.ui.player.PlayerViewModel
 import com.librium.ui.theme.ComposeEmptyActivityTheme
@@ -28,8 +33,16 @@ class MainActivity : ComponentActivity() {
     // singleTask relaunch, so exactly one MPV instance exists per task.
     private val playerVm: PlayerViewModel by viewModels()
 
+    // False on cold start (fresh engine, nothing to play) and after
+    // process death, so the app can never open into an empty player.
+    private var showPlayer by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (VideoIntent.resolve(intent) != null) {
+            // Launched from a file manager: skip home, play immediately.
+            showPlayer = true
+        }
         if (BuildConfig.DEBUG) {
             // Log-only: catches main-thread disk/binder work on-device
             // without ever crashing. Release builds skip this entirely.
@@ -44,7 +57,34 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ComposeEmptyActivityTheme {
-                PlayerScreen(viewModel = playerVm, modifier = Modifier.fillMaxSize())
+                val playerState by playerVm.state.collectAsStateWithLifecycle()
+                // The player is only ever visible with real media state;
+                // anything else falls back to home, never an empty player.
+                val inPlayer = showPlayer && shouldShowPlayer(
+                    hasMedia = playerState.hasMedia,
+                    isLoading = playerState.isLoading,
+                    error = playerState.error,
+                )
+                if (inPlayer) {
+                    PlayerScreen(
+                        viewModel = playerVm,
+                        onBack = {
+                            // No background-play UI exists, so leaving the
+                            // player pauses instead of playing silent audio.
+                            playerVm.pause()
+                            showPlayer = false
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    HomeScreen(
+                        onOpenVideo = { uriString, displayName ->
+                            playerVm.openVideo(uriString, displayName)
+                            showPlayer = true
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         handleVideoIntent(intent)
@@ -98,6 +138,14 @@ class MainActivity : ComponentActivity() {
             }
             LibLog.i(LibLog.MEDIA) { "Opening external video ${uri.logTag()}" }
             playerVm.openVideo(request.uri, name)
+            showPlayer = true
         }
     }
 }
+
+/**
+ * Player visibility gate: the player screen only shows with real media
+ * state (loaded, loading, or a visible error). Pure and unit-tested.
+ */
+internal fun shouldShowPlayer(hasMedia: Boolean, isLoading: Boolean, error: String?): Boolean =
+    hasMedia || isLoading || error != null

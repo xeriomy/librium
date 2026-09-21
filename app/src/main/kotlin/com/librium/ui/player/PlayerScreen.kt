@@ -18,13 +18,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FolderOpen
@@ -35,7 +38,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -81,8 +83,6 @@ import com.librium.subtitle.SubtitleFileDecision
 import com.librium.subtitle.SubtitleFileValidation
 import com.librium.subtitle.SubtitleRejectReason
 import com.librium.subtitle.UNSUPPORTED_SUBTITLE_MESSAGE
-import com.librium.ui.subtitle.SubtitleEditorViewModel
-import com.librium.ui.subtitle.SubtitleInfoSheet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -93,7 +93,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Player screen: video surface + overlay controls, dark UI.
- * Single screen, no navigation. All state comes from [PlayerViewModel].
+ * Shown only when there is media to play (see `shouldShowPlayer` in
+ * MainActivity); all playback state comes from [PlayerViewModel].
  *
  * Recomposition discipline: position ticks arrive at ~4 Hz, so the root
  * only collects [PlayerChrome] (everything except the position), while
@@ -103,7 +104,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun PlayerScreen(
     viewModel: PlayerViewModel = viewModel(),
-    subtitleVm: SubtitleEditorViewModel = viewModel(),
+    onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -115,7 +116,6 @@ fun PlayerScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var audioDialogOpen by remember { mutableStateOf(false) }
     var subtitleDialogOpen by remember { mutableStateOf(false) }
-    var subtitleToolsOpen by remember { mutableStateOf(false) }
     var subtitleBanner by remember { mutableStateOf<String?>(null) }
 
     // Picker callbacks run on the main thread, so every potentially
@@ -131,22 +131,12 @@ fun PlayerScreen(
             return@rememberLauncherForActivityResult
         }
         ioWork.launch {
-            LibLog.timed(LibLog.SAF, "video pick resolve") {
+            val pick = LibLog.timed(LibLog.SAF, "video pick resolve") {
                 withContext(Dispatchers.IO) {
-                    runCatching {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                        )
-                    }
+                    MediaResolver.pickVideo(context.contentResolver, uri)
                 }
             }
-            val name = LibLog.timed(LibLog.SAF, "video displayName") {
-                withContext(Dispatchers.IO) {
-                    MediaResolver.displayName(context.contentResolver, uri)
-                }
-            }
-            viewModel.openVideo(uri.toString(), name)
+            viewModel.openVideo(pick.uriString, pick.displayName)
             controlsVisible = true
         }
     }
@@ -165,7 +155,8 @@ fun PlayerScreen(
             }
             when (val decision = SubtitleFileValidation.validate(name, uri.toString())) {
                 is SubtitleFileDecision.Accept -> {
-                    // Persist access only for files we actually accept.
+                    // Persist access only for files we actually accept, then
+                    // hand the URI to mpv for display. No toolkit involved.
                     withContext(Dispatchers.IO) {
                         runCatching {
                             context.contentResolver.takePersistableUriPermission(
@@ -176,8 +167,6 @@ fun PlayerScreen(
                     }
                     subtitleBanner = null
                     viewModel.addExternalSubtitle(uri.toString())
-                    subtitleVm.loadExternal(context.contentResolver, uri, name)
-                    subtitleToolsOpen = true
                     controlsVisible = true
                 }
                 is SubtitleFileDecision.Reject -> {
@@ -313,7 +302,7 @@ fun PlayerScreen(
             }
         }
 
-        // Top bar: title.
+        // Top bar: back button + title inside the safe area.
         AnimatedVisibility(
             visible = controlsVisible && chrome.hasMedia,
             enter = fadeIn(),
@@ -324,17 +313,85 @@ fun PlayerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color(0x99000000))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .statusBarsPadding()
+                    .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = chrome.mediaTitle ?: "Librium",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                }
+                Spacer(Modifier.width(4.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = chrome.mediaTitle ?: "Librium",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (chrome.durationMs > 0L) {
+                        Text(
+                            text = "Duration ${formatTimestamp(chrome.durationMs)}",
+                            color = Color(0xFFB0B0B0),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Center transport: the main playback controls.
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+            ) {
+                IconButton(
+                    onClick = { viewModel.seekBy(-10_000) },
+                    enabled = chrome.canSeek,
+                    modifier = Modifier.size(56.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Replay10,
+                        contentDescription = "Back 10 seconds",
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
+                IconButton(
+                    onClick = viewModel::togglePlayPause,
+                    enabled = chrome.hasMedia,
+                    modifier = Modifier.size(72.dp),
+                ) {
+                    Icon(
+                        if (chrome.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = if (chrome.isPaused) "Play" else "Pause",
+                        tint = Color.White,
+                        modifier = Modifier.size(56.dp),
+                    )
+                }
+                IconButton(
+                    onClick = { viewModel.seekBy(10_000) },
+                    enabled = chrome.canSeek,
+                    modifier = Modifier.size(56.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Forward10,
+                        contentDescription = "Forward 10 seconds",
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
             }
         }
 
@@ -349,6 +406,7 @@ fun PlayerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color(0xCC000000))
+                    .navigationBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
             ) {
                 PlaybackProgressRow(
@@ -357,14 +415,11 @@ fun PlayerScreen(
                 )
                 TransportRow(
                     stateFlow = viewModel.state,
-                    onTogglePlayPause = viewModel::togglePlayPause,
-                    onSeekBy = viewModel::seekBy,
                     onToggleFullscreen = viewModel::toggleFullscreen,
                     onOpenVideo = { videoPicker.launch(MediaResolver.VIDEO_MIME_FILTER) },
                     onLoadSubtitle = { subtitlePicker.launch(Unit) },
                     onOpenAudioTracks = { audioDialogOpen = true },
                     onOpenSubtitleTracks = { subtitleDialogOpen = true },
-                    onOpenToolkit = { subtitleToolsOpen = true },
                 )
                 VolumeRow(
                     stateFlow = viewModel.state,
@@ -394,16 +449,6 @@ fun PlayerScreen(
             onDismiss = { subtitleDialogOpen = false },
         )
     }
-
-    if (subtitleToolsOpen) {
-        SubtitleInfoSheet(
-            editor = subtitleVm,
-            playerState = viewModel.state,
-            onApplyPlayerDelay = viewModel::setSubtitleDelay,
-            onAppearanceChange = viewModel::setSubtitleAppearance,
-            onDismiss = { subtitleToolsOpen = false },
-        )
-    }
 }
 
 /**
@@ -418,6 +463,8 @@ private data class PlayerChrome(
     val isFullscreen: Boolean = false,
     val error: String? = null,
     val mediaTitle: String? = null,
+    val durationMs: Long = 0L,
+    val canSeek: Boolean = false,
     val volume: Int = 100,
     val isMuted: Boolean = false,
     val audioTracks: List<AudioTrack> = emptyList(),
@@ -434,6 +481,8 @@ private data class PlayerChrome(
             isFullscreen = state.isFullscreen,
             error = state.error,
             mediaTitle = state.mediaTitle,
+            durationMs = state.durationMs,
+            canSeek = state.canSeek,
             volume = state.volume,
             isMuted = state.isMuted,
             audioTracks = state.audioTracks,
@@ -497,27 +546,22 @@ private fun PlaybackProgressRow(
 }
 
 private data class TransportSlice(
-    val isPaused: Boolean = true,
     val hasMedia: Boolean = false,
-    val canSeek: Boolean = false,
     val isFullscreen: Boolean = false,
 )
 
 @Composable
 private fun TransportRow(
     stateFlow: StateFlow<PlayerState>,
-    onTogglePlayPause: () -> Unit,
-    onSeekBy: (Long) -> Unit,
     onToggleFullscreen: () -> Unit,
     onOpenVideo: () -> Unit,
     onLoadSubtitle: () -> Unit,
     onOpenAudioTracks: () -> Unit,
     onOpenSubtitleTracks: () -> Unit,
-    onOpenToolkit: () -> Unit,
 ) {
     val transportFlow = remember(stateFlow) {
         stateFlow.map {
-            TransportSlice(it.isPaused, it.hasMedia, it.canSeek, it.isFullscreen)
+            TransportSlice(it.hasMedia, it.isFullscreen)
         }.distinctUntilChanged()
     }
     val transport by transportFlow.collectAsStateWithLifecycle(TransportSlice())
@@ -546,40 +590,7 @@ private fun TransportRow(
                     label = "Load subtitle file",
                     onClick = { moreOpen = false; onLoadSubtitle() },
                 )
-                PlayerMenuItem(
-                    icon = Icons.Filled.Audiotrack,
-                    label = "Audio tracks",
-                    onClick = { moreOpen = false; onOpenAudioTracks() },
-                )
-                PlayerMenuItem(
-                    icon = Icons.Filled.ClosedCaption,
-                    label = "Subtitle tracks",
-                    onClick = { moreOpen = false; onOpenSubtitleTracks() },
-                )
-                PlayerMenuItem(
-                    icon = Icons.Filled.Settings,
-                    label = "Subtitle toolkit",
-                    onClick = { moreOpen = false; onOpenToolkit() },
-                )
             }
-        }
-        IconButton(
-            onClick = onTogglePlayPause,
-            enabled = transport.hasMedia,
-            modifier = Modifier.size(56.dp),
-        ) {
-            Icon(
-                if (transport.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                contentDescription = if (transport.isPaused) "Play" else "Pause",
-                tint = Color.White,
-                modifier = Modifier.size(40.dp),
-            )
-        }
-        IconButton(onClick = { onSeekBy(-10_000) }, enabled = transport.canSeek) {
-            Icon(Icons.Filled.Replay10, contentDescription = "Back 10 seconds", tint = Color.White)
-        }
-        IconButton(onClick = { onSeekBy(10_000) }, enabled = transport.canSeek) {
-            Icon(Icons.Filled.Forward10, contentDescription = "Forward 10 seconds", tint = Color.White)
         }
         IconButton(onClick = onOpenSubtitleTracks, enabled = transport.hasMedia) {
             Icon(Icons.Filled.ClosedCaption, contentDescription = "Subtitle tracks", tint = Color.White)
