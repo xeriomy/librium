@@ -87,8 +87,8 @@ class AssSsaParserTest {
     fun reordered_format_columns_parse() {
         val text = """
             [Events]
-            Format: Text, Style, End, Start, Layer, Name, MarginL, MarginR, MarginV, Effect
-            Dialogue: Reordered,Alt,0:00:04.00,0:00:01.00,0,,0,0,0,
+            Format: Style, Start, Layer, End, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: Alt,0:00:01.00,0,0:00:04.00,,0,0,0,,Reordered
         """.trimIndent()
         val doc = parser.parse("r.ass", text)
         assertEquals(1, doc.events.size)

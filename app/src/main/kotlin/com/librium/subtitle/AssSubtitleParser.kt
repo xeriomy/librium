@@ -52,10 +52,6 @@ class AssSubtitleParser : SubtitleParser {
             }
             if (trimmed.isEmpty() || trimmed.startsWith(";")) {
                 if (!seenEvents) headerLines.add(line)
-                else if (section == EVENTS_SECTION) {
-                    // Keep blank/comment-ish lines inside Events for fidelity.
-                    extraSections.getOrPut(COMMENTS_KEY) { mutableListOf() }.add(line)
-                }
                 continue
             }
             if (section == EVENTS_SECTION) seenEvents = true
@@ -151,7 +147,10 @@ class AssSubtitleParser : SubtitleParser {
         }
         val start = parseTimestamp(col("start")) ?: return null
         val end = parseTimestamp(col("end")) ?: return null
-        val rawText = parts.last()
+        // Text is last in real-world files (commas survive via the split
+        // limit); otherwise fall back to its declared column.
+        val textIndex = columns.indexOf("text")
+        val rawText = if (textIndex == columns.size - 1) parts.last() else col("text")
         val plain = stripAssText(rawText).trim()
         val extras = linkedMapOf<String, String>()
         for (name in columns) {

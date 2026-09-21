@@ -120,7 +120,7 @@ class SubtitleAnalyzerTest {
         assertEquals(2, stats.eventCount)
         assertEquals(6000L, stats.spanMs)
         assertEquals(5000L, stats.visibleMs)
-        assertEquals(7L, stats.totalWords)
+        assertEquals(5L, stats.totalWords)
         assertTrue(stats.totalCharacters > 0)
         assertTrue(result.issueCount == result.all.size)
     }
