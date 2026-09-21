@@ -63,7 +63,9 @@ class DefaultPlayerControllerTest {
             engine.calls,
         )
         // Latest title wins at the UI layer once the backend emits.
-        engine.emit(PlayerState())
+        // (Must differ from the initial value: equal StateFlow values
+        // do not notify collectors.)
+        engine.emit(PlayerState(hasMedia = true))
         assertEquals("B", controller.state.value.mediaTitle)
     }
 
